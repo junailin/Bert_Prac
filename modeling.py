@@ -974,7 +974,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
         logits = self.classifier(pooled_output)
         # print("\tIn Model: input size", input_ids.size(),
         #       "\toutput size", logits.size())
-        # print("\tIn Model: input", input_ids, "\toutput", logits)
+        # print("\tlogits", logits)
         return logits
         # if labels is not None:
         #     loss_fct = CrossEntropyLoss()

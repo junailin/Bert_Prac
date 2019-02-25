@@ -193,11 +193,11 @@ def main():
                         action='store_true',
                         help="Set this flag if you are using an uncased model.")
     parser.add_argument("--train_batch_size",
-                        default=320,
+                        default=8,
                         type=int,
                         help="Total batch size for training.")
     parser.add_argument("--eval_batch_size",
-                        default=320,
+                        default=8,
                         type=int,
                         help="Total batch size for eval.")
     parser.add_argument("--learning_rate",
@@ -383,11 +383,11 @@ def main():
             train_sampler = DistributedSampler(train_data)
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
-        model.train()
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
+                model.train()
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
                 predictions = model(input_ids, segment_ids, input_mask, label_ids)
@@ -421,64 +421,62 @@ def main():
                     global_step += 1
 
                 # do eval
-                # if global_step % args.eval_freq == 0 and global_step > 0:
-                    # logger.info("***** Running evaluation *****")
-                    # logger.info("  Num examples = %d", len(eval_examples))
-                    # logger.info("  Batch size = %d", args.eval_batch_size)
-                    # all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
-                    # all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
-                    # all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
-                    # all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.long)
-                    # eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-                    # # Run prediction for full data
-                    # eval_sampler = SequentialSampler(eval_data)
-                    # eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
-                    #
-                    # model.eval()
-                    # eval_loss, eval_accuracy = 0, 0
-                    # nb_eval_steps, nb_eval_examples = 0, 0
-                    #
-                    # for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
-                    #     input_ids = input_ids.to(device)
-                    #     input_mask = input_mask.to(device)
-                    #     segment_ids = segment_ids.to(device)
-                    #     label_ids = label_ids.to(device)
-                    #
-                    #     with torch.no_grad():
-                    #         predictions = model(input_ids, segment_ids, input_mask)
-                    #
-                    #     # 计算loss
-                    #     for i in range(len(predictions)):
-                    #         predictions[i] = predictions[i].view(-1, num_labels)
-                    #     loss = loss_fct_parallel(predictions, label_ids.view(-1))
-                    #     if n_gpu > 1:
-                    #         loss = loss.mean()  # mean() to average on multi-gpu.
-                    #     if args.gradient_accumulation_steps > 1:
-                    #         loss = loss / args.gradient_accumulation_steps
-                    #     tmp_eval_loss = torch.cat(loss)
-                    #
-                    #     predictions = torch.cat(predictions)  # shape: [batch_size, num_labels]
-                    #     print(predictions.size())
-                    #     logits = predictions.detach().cpu().numpy()
-                    #     label_ids = label_ids.to('cpu').numpy()
-                    #     tmp_eval_accuracy = accuracy(logits, label_ids)
-                    #
-                    #     eval_loss += tmp_eval_loss.mean().item()
-                    #     eval_accuracy += tmp_eval_accuracy
-                    #
-                    #     nb_eval_examples += input_ids.size(0)
-                    #     nb_eval_steps += 1
-                    #
-                    # eval_loss = eval_loss / nb_eval_steps
-                    # eval_accuracy = eval_accuracy / nb_eval_examples
-                    # loss = tr_loss / nb_tr_steps if args.do_train else None
-                    # result = {'eval_loss': eval_loss,
-                    #           'eval_accuracy': eval_accuracy,
-                    #           'global_step': global_step,
-                    #           'loss': loss}
-                    # logger.info("***** Eval results *****")
-                    # for key in sorted(result.keys()):
-                    #     logger.info("  %s = %s", key, str(result[key]))
+                if global_step % args.eval_freq == 0 and global_step > 0:
+                    logger.info("***** Running evaluation *****")
+                    logger.info("  Num examples = %d", len(eval_examples))
+                    logger.info("  Batch size = %d", args.eval_batch_size)
+                    all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
+                    all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
+                    all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
+                    all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.long)
+                    eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+                    # Run prediction for full data
+                    eval_sampler = SequentialSampler(eval_data)
+                    eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+
+                    model.eval()
+                    eval_loss, eval_accuracy = 0, 0
+                    nb_eval_steps, nb_eval_examples = 0, 0
+
+                    for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
+                        input_ids = input_ids.to(device)
+                        input_mask = input_mask.to(device)
+                        segment_ids = segment_ids.to(device)
+                        label_ids = label_ids.to(device)
+
+                        with torch.no_grad():
+                            eval_preds = model(input_ids, segment_ids, input_mask)
+                        # 计算loss
+                        for i in range(len(eval_preds)):
+                            eval_preds[i] = eval_preds[i].view(-1, num_labels)
+                        loss = loss_fct_parallel(eval_preds, label_ids.view(-1))
+                        if n_gpu > 1:
+                            loss = loss.mean()  # mean() to average on multi-gpu.
+                        if args.gradient_accumulation_steps > 1:
+                            loss = loss / args.gradient_accumulation_steps
+                        tmp_eval_loss = loss
+
+                        eval_preds = torch.cat(eval_preds)  # shape: [batch_size, num_labels]
+                        logits = eval_preds.detach().cpu().numpy()
+                        label_ids = label_ids.to('cpu').numpy()
+                        tmp_eval_accuracy = accuracy(logits, label_ids)
+
+                        eval_loss += tmp_eval_loss.mean().item()
+                        eval_accuracy += tmp_eval_accuracy
+
+                        nb_eval_examples += input_ids.size(0)
+                        nb_eval_steps += 1
+
+                    eval_loss = eval_loss / nb_eval_steps
+                    eval_accuracy = eval_accuracy / nb_eval_examples
+                    loss = tr_loss / nb_tr_steps if args.do_train else None
+                    result = {'eval_loss': eval_loss,
+                              'eval_accuracy': eval_accuracy,
+                              'global_step': global_step,
+                              'loss': loss}
+                    logger.info("***** Eval results *****")
+                    for key in sorted(result.keys()):
+                        logger.info("  %s = %s", key, str(result[key]))
 
     if args.do_train:
         # Save a trained model and the associated configuration
