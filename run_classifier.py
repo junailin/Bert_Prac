@@ -127,6 +127,10 @@ class ColaProcessor(DataProcessor):
         return self._create_examples(
             self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
 
+    def get_infer_examples(self, data_dir):
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "infer")
+
     def get_labels(self):
         """See base class."""
         return ["0", "1"]
@@ -153,12 +157,9 @@ def main():
                         type=str,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
     parser.add_argument("--bert_model",
-                        default="/workspace/pretrained_models/bert_en",  # /workspace/pretrained_models/bert_en
+                        default="/workspace/train_output/test_bert_classifier",  # /workspace/pretrained_models/bert_en
                         type=str,
-                        help="Bert pre-trained model selected in the list: bert-base-uncased, "
-                        "bert-large-uncased, bert-base-cased, bert-large-cased, bert-base-multilingual-uncased, "
-                        "bert-base-multilingual-cased, bert-base-chinese."
-                        "填bert预训练模型的路径，路径下必须包括以下三个文件"
+                        help="填bert预训练模型(或者是已经fine-tune的模型)的路径，路径下必须包括以下三个文件"
                         "pytorch_model.bin  vocab.txt  bert_config.json")
     parser.add_argument("--task_name",
                         default="cola",
@@ -183,6 +184,9 @@ def main():
     parser.add_argument("--do_train",
                         action='store_true',
                         help="Whether to run training.")
+    parser.add_argument("--do_infer",
+                        action='store_true',
+                        help="Whether to run inference.")
     parser.add_argument("--eval_freq",
                         default=20,
                         help="训练过程中评估模型的频率，即多少个 step 评估一次模型")
@@ -200,6 +204,10 @@ def main():
                         default=480,
                         type=int,
                         help="Total batch size for eval.")
+    parser.add_argument("--infer_batch_size",
+                        default=480,
+                        type=int,
+                        help="Total batch size for infer.")
     parser.add_argument("--learning_rate",
                         default=5e-5,
                         type=float,
@@ -283,8 +291,8 @@ def main():
     if n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
 
-    if not args.do_train and not args.do_eval:
-        raise ValueError("At least one of `do_train` or `do_eval` must be True.")
+    if not args.do_train and not args.do_infer:
+        raise ValueError("At least one of `do_train` or `do_infer` must be True.")
 
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train:
         raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
@@ -492,65 +500,45 @@ def main():
         config = BertConfig(output_config_file)
         model = BertForSequenceClassification(config, num_labels=num_labels)
         model.load_state_dict(torch.load(output_model_file))
-    else:
-        model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
-    model.to(device)
+    # else:
+    #     model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
+    # model.to(device)
 
-    # if args.do_eval and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
-    #     eval_examples = processor.get_dev_examples(args.data_dir)
-    #     eval_features = convert_examples_to_features(
-    #         eval_examples, label_list, args.max_seq_length, tokenizer)
-    #     logger.info("***** Running evaluation *****")
-    #     logger.info("  Num examples = %d", len(eval_examples))
-    #     logger.info("  Batch size = %d", args.eval_batch_size)
-    #     all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
-    #     all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
-    #     all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
-    #     all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.long)
-    #     eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-    #     # Run prediction for full data
-    #     eval_sampler = SequentialSampler(eval_data)
-    #     eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
-    #
-    #     model.eval()
-    #     eval_loss, eval_accuracy = 0, 0
-    #     nb_eval_steps, nb_eval_examples = 0, 0
-    #
-    #     for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
-    #         input_ids = input_ids.to(device)
-    #         input_mask = input_mask.to(device)
-    #         segment_ids = segment_ids.to(device)
-    #         label_ids = label_ids.to(device)
-    #
-    #         with torch.no_grad():
-    #             tmp_eval_loss = model(input_ids, segment_ids, input_mask, label_ids)
-    #             logits = model(input_ids, segment_ids, input_mask)
-    #
-    #         logits = logits.detach().cpu().numpy()
-    #         label_ids = label_ids.to('cpu').numpy()
-    #         tmp_eval_accuracy = accuracy(logits, label_ids)
-    #
-    #         eval_loss += tmp_eval_loss.mean().item()
-    #         eval_accuracy += tmp_eval_accuracy
-    #
-    #         nb_eval_examples += input_ids.size(0)
-    #         nb_eval_steps += 1
-    #
-    #     eval_loss = eval_loss / nb_eval_steps
-    #     eval_accuracy = eval_accuracy / nb_eval_examples
-    #     loss = tr_loss/nb_tr_steps if args.do_train else None
-    #     result = {'eval_loss': eval_loss,
-    #               'eval_accuracy': eval_accuracy,
-    #               'global_step': global_step,
-    #               'loss': loss}
-    #
-    #     output_eval_file = os.path.join(args.output_dir, "eval_results.txt")
-    #     with open(output_eval_file, "w") as writer:
-    #         logger.info("***** Eval results *****")
-    #         for key in sorted(result.keys()):
-    #             logger.info("  %s = %s", key, str(result[key]))
-    #             writer.write("%s = %s\n" % (key, str(result[key])))
+    if args.do_infer:
+        infer_examples = processor.get_infer_examples(args.data_dir)
+        infer_features = convert_examples_to_features(
+            infer_examples, label_list, args.max_seq_length, tokenizer)
+        logger.info("***** Running Inference *****")
+        logger.info("  Num examples = %d", len(infer_examples))
+        logger.info("  Batch size = %d", args.infer_batch_size)
+        all_input_ids = torch.tensor([f.input_ids for f in infer_features], dtype=torch.long)
+        all_input_mask = torch.tensor([f.input_mask for f in infer_features], dtype=torch.long)
+        all_segment_ids = torch.tensor([f.segment_ids for f in infer_features], dtype=torch.long)
+        all_label_ids = torch.tensor([f.label_id for f in infer_features], dtype=torch.long)
+        infer_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+        # Run prediction for full data
+        infer_sampler = SequentialSampler(infer_data)
+        infer_dataloader = DataLoader(infer_data, sampler=infer_sampler, batch_size=args.infer_batch_size)
 
+        model.eval()
+
+        for input_ids, input_mask, segment_ids, label_ids in tqdm(infer_dataloader, desc="Inference"):
+            input_ids = input_ids.to(device)
+            input_mask = input_mask.to(device)
+            segment_ids = segment_ids.to(device)
+            label_ids = label_ids.to(device)
+
+            with torch.no_grad():
+                infer_preds = model(input_ids, segment_ids, input_mask, label_ids)
+
+            for i in range(len(infer_preds)):
+                infer_preds[i] = infer_preds[i].view(-1, num_labels)
+
+            infer_preds = torch.cat(infer_preds)  # shape: [batch_size, num_labels]
+            logits = infer_preds.detach().cpu().numpy()
+            outputs = np.argmax(logits, axis=1)
+            print(outputs)
+        logger.info("***** Infer finished *****")
 
 
 if __name__ == "__main__":
