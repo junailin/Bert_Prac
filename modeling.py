@@ -972,9 +972,6 @@ class BertForSequenceClassification(BertPreTrainedModel):
         _, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
-        # print("\tIn Model: input size", input_ids.size(),
-        #       "\toutput size", logits.size())
-        # print("\tlogits", logits)
         return logits
         # if labels is not None:
         #     loss_fct = CrossEntropyLoss()

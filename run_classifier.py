@@ -175,7 +175,7 @@ def main():
                         type=str,
                         help="Where do you want to store the pre-trained models downloaded from s3")
     parser.add_argument("--max_seq_length",
-                        default=20,
+                        default=30,
                         type=int,
                         help="The maximum total input sequence length after WordPiece tokenization. \n"
                              "Sequences longer than this will be truncated, and sequences shorter \n"
@@ -193,19 +193,19 @@ def main():
                         action='store_true',
                         help="Set this flag if you are using an uncased model.")
     parser.add_argument("--train_batch_size",
-                        default=8,
+                        default=480,
                         type=int,
                         help="Total batch size for training.")
     parser.add_argument("--eval_batch_size",
-                        default=8,
+                        default=480,
                         type=int,
                         help="Total batch size for eval.")
     parser.add_argument("--learning_rate",
-                        default=5e-3,
+                        default=5e-5,
                         type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--num_train_epochs",
-                        default=20,
+                        default=10,
                         type=float,
                         help="Total number of training epochs to perform.")
     parser.add_argument("--warmup_proportion",
@@ -445,7 +445,8 @@ def main():
                         label_ids = label_ids.to(device)
 
                         with torch.no_grad():
-                            eval_preds = model(input_ids, segment_ids, input_mask)
+                            eval_preds = model(input_ids, segment_ids, input_mask, label_ids)
+
                         # 计算loss
                         for i in range(len(eval_preds)):
                             eval_preds[i] = eval_preds[i].view(-1, num_labels)
