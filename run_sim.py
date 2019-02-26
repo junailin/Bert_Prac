@@ -150,7 +150,7 @@ def main():
                         action='store_true',
                         help="Whether to run inference.")
     parser.add_argument("--eval_freq",
-                        default=20,
+                        default=100,
                         help="训练过程中评估模型的频率，即多少个 step 评估一次模型")
     # parser.add_argument("--do_eval",
     #                     action='store_true',
@@ -171,11 +171,11 @@ def main():
                         type=int,
                         help="Total batch size for infer.")
     parser.add_argument("--learning_rate",
-                        default=5e-5,
+                        default=2e-5,
                         type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--num_train_epochs",
-                        default=10,
+                        default=5,
                         type=float,
                         help="Total number of training epochs to perform.")
     parser.add_argument("--warmup_proportion",
@@ -436,7 +436,7 @@ def main():
                         eval_loss += tmp_eval_loss.mean().item()
                         eval_accuracy += tmp_eval_accuracy
 
-                        nb_eval_examples += label_ids.size(0)
+                        nb_eval_examples += input_ids_a.size(0)
                         nb_eval_steps += 1
 
                     eval_loss = eval_loss / nb_eval_steps
