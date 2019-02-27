@@ -183,8 +183,8 @@ class SimBertBiMPM(BertPreTrainedModel):
             return n / d
 
         # ----- 词嵌入层 -----
-        word_emb_a = self.bert(input_ids_a, token_type_ids_a, attention_mask_a, output_all_encoded_layers=False)
-        word_emb_b = self.bert(input_ids_b, token_type_ids_b, attention_mask_b, output_all_encoded_layers=False)
+        word_emb_a, _ = self.bert(input_ids_a, token_type_ids_a, attention_mask_a, output_all_encoded_layers=False)
+        word_emb_b, _ = self.bert(input_ids_b, token_type_ids_b, attention_mask_b, output_all_encoded_layers=False)
         word_emb_a = self.dropout(word_emb_a)
         word_emb_b = self.dropout(word_emb_b)
 
