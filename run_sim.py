@@ -40,7 +40,7 @@ from tokenization import BertTokenizer
 from optimization import BertAdam, warmup_linear
 from parallel import DataParallelModel, DataParallelCriterion
 from utils import DataProcessor, InputExample, InputFeatures, convert_examples_to_features, _truncate_seq_pair, accuracy
-from sim_modeling import SimJustBert
+from sim_modeling import SimJustBert, SimBertBiMPM
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
@@ -59,7 +59,7 @@ class AntProcessorA(DataProcessor):
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "atec_test5000_balanced.csv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "atec_train160000_balanced.csv")), "dev")
 
     def get_infer_examples(self, data_dir):
         return self._create_examples(
@@ -92,7 +92,7 @@ class AntProcessorB(DataProcessor):
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "atec_test5000_balanced.csv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "atec_train160000_balanced.csv")), "dev")
 
     def get_infer_examples(self, data_dir):
         return self._create_examples(
@@ -123,14 +123,20 @@ def main():
                         type=str,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
     parser.add_argument("--bert_model",
-                        default="/workspace/pretrained_models/bert_ch",
+                        default="/workspace/train_output/test_bert_sim_10",  # /workspace/pretrained_models/bert_ch
                         type=str,
                         help="填bert预训练模型(或者是已经fine-tune的模型)的路径，路径下必须包括以下三个文件"
                         "pytorch_model.bin  vocab.txt  bert_config.json")
     parser.add_argument("--output_dir",
-                        default="/workspace/train_output/test_bert_sim",
+                        default="/workspace/train_output/test_bert_sim_10_tmp",
                         type=str,
                         help="The output directory where the model predictions and checkpoints will be written.")
+    parser.add_argument("--upper_model",
+                        default="None",
+                        type=str,
+                        help="从这几个模型中选择："
+                             "None - 只用Bert"
+                             "BiMPM - Bert上接BiMPM")
 
     ## Other parameters
     parser.add_argument("--cache_dir",
@@ -150,7 +156,7 @@ def main():
                         action='store_true',
                         help="Whether to run inference.")
     parser.add_argument("--eval_freq",
-                        default=100,
+                        default=160,
                         help="训练过程中评估模型的频率，即多少个 step 评估一次模型")
     # parser.add_argument("--do_eval",
     #                     action='store_true',
@@ -269,7 +275,14 @@ def main():
 
     # Prepare model
     cache_dir = args.cache_dir if args.cache_dir else os.path.join(PYTORCH_PRETRAINED_BERT_CACHE, 'distributed_{}'.format(args.local_rank))
-    model = SimJustBert.from_pretrained(args.bert_model,
+    model_class = SimJustBert
+    if args.upper_model == "None":  # 根据参数进行模型选择
+        model_class = SimJustBert
+    elif args.upper_model == "BiMPM":
+        model_class = SimBertBiMPM
+    else:
+        pass
+    model = model_class.from_pretrained(args.bert_model,
               cache_dir=cache_dir,
               num_labels = num_labels)
     if args.fp16:
