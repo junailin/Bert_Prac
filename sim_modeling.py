@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from modeling import BertPreTrainedModel, BertModel
+import building_blocks as bb
 
 
 class SimJustBert(BertPreTrainedModel):
@@ -282,3 +283,112 @@ class SimBertBiMPM(BertPreTrainedModel):
         logits = self.pred_fc2(x)
 
         return logits
+
+
+class SimBertABCNN1(BertPreTrainedModel):
+    '''
+    ABCNN1
+    1. ABCNN1
+    2. wide convolution
+    3. W-ap
+
+    Attributes
+    ----------
+    layer_size : int
+        the number of (abcnn1)
+    distance : function
+        cosine similarity or manhattan
+    abcnn : list of abcnn1
+    conv : list of convolution layer
+    wp : list of w-ap pooling layer
+    ap : list of pooling layer
+    fc : last linear layer(in paper use logistic regression)
+    '''
+
+    def __init__(self, config, num_labels, args):
+        # config 是bert的config
+        # args 是整个app的args
+        super(SimBertABCNN1, self).__init__(config)
+        self.num_labels = num_labels
+        self.bert = BertModel(config)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+        # ----- ABCNN1的基本参数设置 -----
+        self.abcnn_config = {
+            "layer_size": 2,  # 卷积-池化 层数
+            "distance": bb.cosine_similarity,  # 距离衡量标准
+            "inception": True,
+            "filter_width": 2,
+            "filter_channel": 130
+        }
+
+        # ----- abcnn 结构 -----
+        self.abcnn = nn.ModuleList()
+        self.conv = nn.ModuleList()
+        self.ap = nn.ModuleList([bb.ApLayer(config.hidden_size)])
+        self.wp = nn.ModuleList()
+        self.fc = nn.Linear(self.abcnn_config["layer_size"] + 1, self.num_labels)
+
+        for i in range(self.abcnn_config["layer_size"]):
+            self.abcnn.append(bb.Abcnn1Portion(args.max_seq_length, config.hidden_size if i == 0 else self.abcnn_config["filter_channel"]))
+            self.conv.append(
+                bb.ConvLayer(False, args.max_seq_length, self.abcnn_config["filter_width"],
+                             config.hidden_size if i == 0
+                             else self.abcnn_config["filter_channel"], self.abcnn_config["filter_channel"],
+                             self.abcnn_config["inception"]))
+            self.ap.append(bb.ApLayer(self.abcnn_config["filter_channel"]))
+            self.wp.append(bb.WpLayer(args.max_seq_length, self.abcnn_config["filter_width"], False))
+
+        # ----- 初始化参数 -----
+        self.apply(self.init_bert_weights)
+
+    def forward(self, input_ids_a, input_ids_b,
+                token_type_ids_a=None, token_type_ids_b=None,
+                attention_mask_a=None, attention_mask_b=None,
+                labels=None):
+        """
+        1. stack sentence vector similarity
+
+        2. for layer_size
+            abcnn1
+            convolution
+            stack sentence vector similarity
+            W-ap for next loop x1, x2
+
+        3. concatenate similarity list
+            size (batch_size, layer_size + 1)
+
+        4. Linear layer
+            size (batch_size, 1)
+
+        句子的词嵌入格式必须为 (batch_size, 1, sentence_length, emb_dim)
+
+        Returns
+        -------
+        output : 2-D torch Tensor
+            size (batch_size, 1)
+        """
+
+        # ----- bert 词嵌入 -----
+        word_emb_a, _ = self.bert(input_ids_a, token_type_ids_a, attention_mask_a, output_all_encoded_layers=False)
+        word_emb_b, _ = self.bert(input_ids_b, token_type_ids_b, attention_mask_b, output_all_encoded_layers=False)
+        x1 = torch.unsqueeze(word_emb_a, 1)
+        x2 = torch.unsqueeze(word_emb_b, 1)
+        x1 = self.dropout(x1)
+        x2 = self.dropout(x2)
+
+        # ----- abcnn -----
+        sim = []
+        sim.append(self.distance(self.ap[0](x1), self.ap[0](x2)))
+
+        for i in range(self.layer_size):
+            x1, x2 = self.abcnn[i](x1, x2)
+            x1 = self.conv[i](x1)
+            x2 = self.conv[i](x2)
+            sim.append(self.distance(self.ap[i + 1](x1), self.ap[i + 1](x2)))
+            x1 = self.wp[i](x1)
+            x2 = self.wp[i](x2)
+
+        sim_fc = torch.cat(sim, dim=1)
+        output = self.fc(sim_fc)
+        return output
