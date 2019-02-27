@@ -40,7 +40,7 @@ from tokenization import BertTokenizer
 from optimization import BertAdam, warmup_linear
 from parallel import DataParallelModel, DataParallelCriterion
 from utils import DataProcessor, InputExample, InputFeatures, convert_examples_to_features, _truncate_seq_pair, accuracy
-from sim_modeling import SimJustBert, SimBertBiMPM
+from sim_modeling import SimJustBert, SimBertBiMPM, SimBertABCNN1
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
@@ -59,7 +59,7 @@ class AntProcessorA(DataProcessor):
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "atec_train160000_balanced.csv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "atec_test5000_balanced.csv")), "dev")
 
     def get_infer_examples(self, data_dir):
         return self._create_examples(
@@ -92,7 +92,7 @@ class AntProcessorB(DataProcessor):
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "atec_train160000_balanced.csv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "atec_test5000_balanced.csv")), "dev")
 
     def get_infer_examples(self, data_dir):
         return self._create_examples(
@@ -123,12 +123,12 @@ def main():
                         type=str,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
     parser.add_argument("--bert_model",
-                        default="/workspace/train_output/test_bert_sim_10",  # /workspace/pretrained_models/bert_ch
+                        default="/workspace/train_output/test_bert_bimpm_10",  # /workspace/pretrained_models/bert_ch
                         type=str,
                         help="填bert预训练模型(或者是已经fine-tune的模型)的路径，路径下必须包括以下三个文件"
                         "pytorch_model.bin  vocab.txt  bert_config.json")
     parser.add_argument("--output_dir",
-                        default="/workspace/train_output/test_bert_sim_10_tmp",
+                        default="/workspace/train_output/test",
                         type=str,
                         help="The output directory where the model predictions and checkpoints will be written.")
     parser.add_argument("--upper_model",
@@ -136,7 +136,8 @@ def main():
                         type=str,
                         help="从这几个模型中选择："
                              "None - 只用Bert"
-                             "BiMPM - Bert上接BiMPM")
+                             "BiMPM - Bert上接BiMPM"
+                             "ABCNN1")
 
     ## Other parameters
     parser.add_argument("--cache_dir",
@@ -280,6 +281,8 @@ def main():
         model_class = SimJustBert
     elif args.upper_model == "BiMPM":
         model_class = SimBertBiMPM
+    elif args.upper_model == "ABCNN1":
+        model_class = SimBertABCNN1
     else:
         pass
     model = model_class.from_pretrained(args.bert_model,
@@ -474,7 +477,7 @@ def main():
 
         # Load a trained model and config that you have fine-tuned
         config = BertConfig(output_config_file)
-        model = BertForSequenceClassification(config, num_labels=num_labels)
+        model = model_class(config, num_labels=num_labels)
         model.load_state_dict(torch.load(output_model_file))
     # else:
     #     model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
