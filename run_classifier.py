@@ -18,10 +18,9 @@
 from __future__ import absolute_import, division, print_function
 
 import argparse
-import csv
 import logging
 import os
-import sys
+
 curr_dir = os.path.dirname(os.path.realpath(__file__))
 # sys.path.append(os.path.join(curr_dir, '../'))
 import random
@@ -34,18 +33,17 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
-from file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-from modeling import BertForSequenceClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
-from tokenization import BertTokenizer
-from optimization import BertAdam, warmup_linear
-from parallel import DataParallelModel, DataParallelCriterion
-from utils import DataProcessor, InputExample, InputFeatures, convert_examples_to_features, _truncate_seq_pair, accuracy
+from util.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
+from models.bert import BertForSequenceClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
+from util.tokenization import BertTokenizer
+from util.optimization import BertAdam, warmup_linear
+from util.parallel import DataParallelModel, DataParallelCriterion
+from util.utils import DataProcessor, InputExample, convert_examples_to_features, accuracy
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
                     level = logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 
 class MrpcProcessor(DataProcessor):
@@ -147,106 +145,70 @@ class ColaProcessor(DataProcessor):
         return examples
 
 
-
-def main():
+def run_args():
     parser = argparse.ArgumentParser()
 
-    ## Required parameters
+    # ----- Required parameters -----
     parser.add_argument("--data_dir",
-                        default="/workspace/dataset/CoLA",  # /workspace/dataset/CoLA
-                        type=str,
-                        help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
+                        default="/workspace/dataset/CoLA", type=str,
+                        help="训练数据的目录，这个和XxxProcessor是对应的")
     parser.add_argument("--bert_model",
-                        default="/workspace/train_output/test_bert_classifier",  # /workspace/pretrained_models/bert_en
-                        type=str,
-                        help="填bert预训练模型(或者是已经fine-tune的模型)的路径，路径下必须包括以下三个文件"
-                        "pytorch_model.bin  vocab.txt  bert_config.json")
-    parser.add_argument("--task_name",
-                        default="cola",
-                        type=str,
-                        help="The name of the task to train.")
+                        default="/workspace/pretrained_models/bert_en", type=str,
+                        help="填bert预训练模型(或者是已经fine-tune的模型)的路径，路径下必须包括以下三个文件："
+                             "pytorch_model.bin  vocab.txt  bert_config.json")
     parser.add_argument("--output_dir",
-                        default="/workspace/train_output/test_bert_classifier",
-                        type=str,
-                        help="The output directory where the model predictions and checkpoints will be written.")
+                        default="/workspace/train_output/test", type=str,
+                        help="训练好的模型的保存地址")
 
-    ## Other parameters
-    parser.add_argument("--cache_dir",
-                        default="",
-                        type=str,
-                        help="Where do you want to store the pre-trained models downloaded from s3")
-    parser.add_argument("--max_seq_length",
-                        default=30,
-                        type=int,
-                        help="The maximum total input sequence length after WordPiece tokenization. \n"
-                             "Sequences longer than this will be truncated, and sequences shorter \n"
-                             "than this will be padded.")
-    parser.add_argument("--do_train",
-                        action='store_true',
-                        help="Whether to run training.")
-    parser.add_argument("--do_infer",
-                        action='store_true',
-                        help="Whether to run inference.")
-    parser.add_argument("--eval_freq",
-                        default=20,
-                        help="训练过程中评估模型的频率，即多少个 step 评估一次模型")
-    # parser.add_argument("--do_eval",
-    #                     action='store_true',
-    #                     help="Whether to run eval on the dev set.")
-    parser.add_argument("--do_lower_case",
-                        action='store_true',
-                        help="Set this flag if you are using an uncased model.")
-    parser.add_argument("--train_batch_size",
-                        default=480,
-                        type=int,
+    # ----- 重要 parameters -----
+    parser.add_argument("--max_seq_length", default=64, type=int,
+                        help="最大序列长度（piece tokenize 之后的）")
+    parser.add_argument("--eval_freq", default=1000,
+                        help="训练过程中评估模型的频率，即多少个 iteration 评估一次模型")
+    parser.add_argument("--train_batch_size", default=480, type=int,
                         help="Total batch size for training.")
-    parser.add_argument("--eval_batch_size",
-                        default=480,
-                        type=int,
+    parser.add_argument("--eval_batch_size", default=480, type=int,
                         help="Total batch size for eval.")
-    parser.add_argument("--infer_batch_size",
-                        default=480,
-                        type=int,
+    parser.add_argument("--infer_batch_size", default=480, type=int,
                         help="Total batch size for infer.")
-    parser.add_argument("--learning_rate",
-                        default=5e-5,
-                        type=float,
+    parser.add_argument("--learning_rate", default=2e-5, type=float,
                         help="The initial learning rate for Adam.")
-    parser.add_argument("--num_train_epochs",
-                        default=10,
-                        type=float,
+    parser.add_argument("--num_train_epochs", default=5, type=float,
                         help="Total number of training epochs to perform.")
-    parser.add_argument("--warmup_proportion",
-                        default=0.1,
-                        type=float,
+
+    # ----- 其他 parameters -----
+    parser.add_argument("--do_lower_case", action='store_true',
+                        help="Set this flag if you are using an uncased model.")
+    parser.add_argument("--do_train", action='store_true', help="Whether to run training.")
+    parser.add_argument("--do_infer", action='store_true', help="Whether to run inference.")
+
+    parser.add_argument("--warmup_proportion", default=0.1, type=float,
                         help="Proportion of training to perform linear learning rate warmup for. "
                              "E.g., 0.1 = 10%% of training.")
-    parser.add_argument("--no_cuda",
-                        action='store_true',
+    parser.add_argument("--no_cuda", action='store_true',
                         help="Whether not to use CUDA when available")
-    parser.add_argument("--local_rank",
-                        type=int,
-                        default=-1,
+    parser.add_argument("--local_rank", default=-1, type=int,
                         help="local_rank for distributed training on gpus")
-    parser.add_argument('--seed',
-                        type=int,
-                        default=42,
+    parser.add_argument('--seed', default=42, type=int,
                         help="random seed for initialization")
-    parser.add_argument('--gradient_accumulation_steps',
-                        type=int,
-                        default=1,
+    parser.add_argument('--gradient_accumulation_steps', default=1, type=int,
                         help="Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument('--fp16',
-                        action='store_true',
+    parser.add_argument('--fp16', action='store_true',
                         help="Whether to use 16-bit float precision instead of 32-bit")
-    parser.add_argument('--loss_scale',
-                        type=float, default=0,
+    parser.add_argument('--loss_scale', default=0, type=float,
                         help="Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
                              "0 (default value): dynamic loss scaling.\n"
                              "Positive power of 2: static loss scaling value.\n")
-    parser.add_argument('--server_ip', type=str, default='', help="Can be used for distant debugging.")
-    parser.add_argument('--server_port', type=str, default='', help="Can be used for distant debugging.")
-    args = parser.parse_args()
+    parser.add_argument('--server_ip', type=str, default='',
+                        help="Can be used for distant debugging.")
+    parser.add_argument('--server_port', type=str, default='',
+                        help="Can be used for distant debugging.")
+
+    return parser.parse_args()
+
+
+def main():
+    args = run_args()
 
     if args.server_ip and args.server_port:
         # Distant debugging - see https://code.visualstudio.com/docs/python/debugging#_attach-to-a-local-script
@@ -320,10 +282,7 @@ def main():
             num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size()
 
     # Prepare model
-    cache_dir = args.cache_dir if args.cache_dir else os.path.join(PYTORCH_PRETRAINED_BERT_CACHE, 'distributed_{}'.format(args.local_rank))
-    model = BertForSequenceClassification.from_pretrained(args.bert_model,
-              cache_dir=cache_dir,
-              num_labels = num_labels)
+    model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels = num_labels)
     if args.fp16:
         model.half()
     model.to(device)
@@ -495,14 +454,6 @@ def main():
         output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
         with open(output_config_file, 'w') as f:
             f.write(model_to_save.config.to_json_string())
-
-        # Load a trained model and config that you have fine-tuned
-        config = BertConfig(output_config_file)
-        model = BertForSequenceClassification(config, num_labels=num_labels)
-        model.load_state_dict(torch.load(output_model_file))
-    # else:
-    #     model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
-    # model.to(device)
 
     if args.do_infer:
         infer_examples = processor.get_infer_examples(args.data_dir)
