@@ -18,6 +18,8 @@ class SimBertBiMPM(BertPreTrainedModel):
 
         # ----- 词嵌入层 -----
         self.bert = BertModel(config)
+        for p in self.parameters():
+            p.requires_grad = False
 
         # ----- 语境表示层 -----
         self.context_LSTM = nn.LSTM(
@@ -45,6 +47,10 @@ class SimBertBiMPM(BertPreTrainedModel):
         # ----- 全连接层 -----
         self.pred_fc1 = nn.Linear(self.bimpm_config["hidden_size"] * 4, self.bimpm_config["hidden_size"] * 2)
         self.pred_fc2 = nn.Linear(self.bimpm_config["hidden_size"] * 2, self.num_labels)
+
+        print("----- 各个参数的训练情况如下 -----")
+        for d in self.named_parameters():
+            print(d[0], ":", d[1].requires_grad)
 
         self.apply(self.init_bert_weights)
 
