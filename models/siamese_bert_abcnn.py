@@ -101,13 +101,13 @@ class SimBertABCNN1(BertPreTrainedModel):
 
         # ----- abcnn -----
         sim = []
-        sim.append(self.distance(self.ap[0](x1), self.ap[0](x2)))
+        sim.append(self.abcnn_config["distance"](self.ap[0](x1), self.ap[0](x2)))
 
-        for i in range(self.layer_size):
+        for i in range(self.abcnn_config["layer_size"]):
             x1, x2 = self.abcnn[i](x1, x2)
             x1 = self.conv[i](x1)
             x2 = self.conv[i](x2)
-            sim.append(self.distance(self.ap[i + 1](x1), self.ap[i + 1](x2)))
+            sim.append(self.abcnn_config["distance"](self.ap[i + 1](x1), self.ap[i + 1](x2)))
             x1 = self.wp[i](x1)
             x2 = self.wp[i](x2)
 

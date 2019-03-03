@@ -135,11 +135,11 @@ def run_args():
                              "   ABCNN1 - Bert 上接 ABCNN1")
 
     # ----- 重要 parameters -----
-    parser.add_argument("--max_seq_length", default=64, type=int,
+    parser.add_argument("--max_seq_length", default=30, type=int,
                         help="最大序列长度（piece tokenize 之后的）")
-    parser.add_argument("--eval_freq", default=100,
+    parser.add_argument("--eval_freq", default=30,
                         help="训练过程中评估模型的频率，即多少个 iteration 评估一次模型")
-    parser.add_argument("--train_batch_size", default=320, type=int,
+    parser.add_argument("--train_batch_size", default=480, type=int,
                         help="Total batch size for training.")
     parser.add_argument("--eval_batch_size", default=480, type=int,
                         help="Total batch size for eval.")
@@ -147,7 +147,7 @@ def run_args():
                         help="Total batch size for infer.")
     parser.add_argument("--learning_rate", default=2e-5, type=float,
                         help="The initial learning rate for Adam.")
-    parser.add_argument("--num_train_epochs", default=5, type=float,
+    parser.add_argument("--num_train_epochs", default=10, type=float,
                         help="Total number of training epochs to perform.")
 
     # ----- 其他 parameters -----
@@ -248,7 +248,7 @@ def main():
     elif args.upper_model == "BiMPM":
         model = SimBertBiMPM.from_pretrained(args.bert_model, num_labels=num_labels)
     elif args.upper_model == "ABCNN1":
-        model = SimBertABCNN1.from_pretrained(args.bert_model, num_labels=num_labels)
+        model = SimBertABCNN1.from_pretrained(args.bert_model, num_labels=num_labels, args=args)
     else:
         model = SimJustBert.from_pretrained(args.bert_model, num_labels=num_labels)
     if args.fp16:
