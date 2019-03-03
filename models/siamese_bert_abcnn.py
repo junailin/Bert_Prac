@@ -35,6 +35,9 @@ class SimBertABCNN1(BertPreTrainedModel):
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
+        # for p in self.parameters():  # 固定bert
+        #     p.requires_grad = False
+
         # ----- ABCNN1的基本参数设置 -----
         self.abcnn_config = {
             "layer_size": 2,  # 卷积-池化 层数
@@ -60,6 +63,10 @@ class SimBertABCNN1(BertPreTrainedModel):
                              self.abcnn_config["inception"]))
             self.ap.append(ApLayer(self.abcnn_config["filter_channel"]))
             self.wp.append(WpLayer(args.max_seq_length, self.abcnn_config["filter_width"], False))
+
+        print("----- 各个参数的训练情况如下 -----")
+        for d in self.named_parameters():
+            print(d[0], ":", d[1].requires_grad)
 
         # ----- 初始化参数 -----
         self.apply(self.init_bert_weights)
