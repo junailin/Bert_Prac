@@ -47,6 +47,90 @@ logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(messa
 logger = logging.getLogger(__name__)
 
 
+class NerChProcessor(object):
+    def __init__(self, seq_length, bert_dir):
+        self.seq_length = seq_length
+        self.vocab = load_vocab(os.path.join(bert_dir, "vocab.txt"))
+        self.labels = ["B-LOC", "I-LOC", "E-LOC", "S-LOC",
+                       "B-PER", "I-PER", "E-PER", "S-PER",
+                       "B-T", "I-T", "E-T", "S-T",
+                       "B-ORG", "I-ORG", "E-ORG", "S-ORG",
+                       "O",
+                       "[PAD]", "[CLS]", "[SEP]"]
+        self.label_dict = {label: i for i, label in enumerate(self.labels)}
+        self.label_dict_inv = {i: label for i, label in enumerate(self.labels)}
+
+    def get_tagset_size(self):
+        return len(self.labels)
+
+    def get_train_features(self, data_dir):
+        return self.get_features(data_dir, "train_200w.txt", 50000)
+
+    def get_dev_features(self, data_dir):
+        return self.get_features(data_dir, "test.txt")
+
+    def get_test_features(self, data_dir):
+        return self.get_features(data_dir, "test.txt")
+
+    def get_features(self, data_dir, file_name, num_sents=None):
+        features = []
+        fr = open(os.path.join(data_dir, file_name))
+        index = 0
+        sent_words_list = []
+        sent_tags_list = []
+        sent_counter = 0
+        while True:
+            if index >= 1:
+                line = fr.readline()
+                if not line:
+                    break
+                line = line.strip().split(" ")
+                if len(line) > 1:
+                    if self.vocab.get(line[0]) is not None:
+                        sent_words_list.append(line[0])
+                    else:
+                        sent_words_list.append("[UNK]")
+                    sent_tags_list.append(line[1])
+                else:
+                    if len(sent_words_list) > 0:
+                        sent_counter += 1
+                        # 准备好了一个句子，把它变成 bert features
+                        if len(sent_words_list) > self.seq_length - 2:
+                            sent_words_list = sent_words_list[:(self.seq_length-2)]
+                            sent_tags_list = sent_tags_list[:(self.seq_length-2)]
+                        sent_words_list = ["[CLS]"] + sent_words_list + ["[SEP]"]
+                        sent_tags_list = ["[CLS]"] + sent_tags_list + ["[SEP]"]
+                        input_ids = []
+                        for word in sent_words_list:
+                            input_ids.append(self.vocab.get(word))
+                        input_mask = [1] * len(input_ids)
+                        padding = [0] * (self.seq_length - len(input_ids))
+                        input_ids += padding
+                        input_mask += padding
+                        segment_ids = [0] * self.seq_length
+
+                        tag_ids = []
+                        sent_tags_list += ["[PAD]"] * (self.seq_length - len(sent_tags_list))
+                        for tag in sent_tags_list:
+                            tag_ids.append(self.label_dict.get(tag))
+
+                        sent_words_list = []
+                        sent_tags_list = []
+                        features.append(
+                            InputFeatures(
+                                input_ids=input_ids,
+                                input_mask=input_mask,
+                                segment_ids=segment_ids,
+                                label_id=tag_ids
+                            )
+                        )
+            index += 1
+            if num_sents is not None and sent_counter >= num_sents:
+                break
+        fr.close()
+        return features
+
+
 class ConllProcessor(object):
     def __init__(self, seq_length, bert_dir):
         self.seq_length = seq_length
@@ -132,20 +216,20 @@ def run_args():
 
     # ----- Required parameters -----
     parser.add_argument("--data_dir",
-                        default="/workspace/dataset/CONLL", type=str,
+                        default="/workspace/dataset/ner_ch", type=str,
                         help="训练数据的目录，这个和XxxProcessor是对应的")
     parser.add_argument("--bert_model",
-                        default="/workspace/train_output/conll_ner_test", type=str,
+                        default="/workspace/pretrained_models/bert_ch", type=str,
                         help="填bert预训练模型(或者是已经fine-tune的模型)的路径，路径下必须包括以下三个文件："
                              "pytorch_model.bin  vocab.txt  bert_config.json")
     parser.add_argument("--output_dir",
-                        default="/workspace/train_output/conll_ner_test2", type=str,
+                        default="/workspace/train_output/ner_ch_test", type=str,
                         help="训练好的模型的保存地址")
 
     # ----- 重要 parameters -----
     parser.add_argument("--max_seq_length", default=64, type=int,
                         help="最大序列长度（piece tokenize 之后的）")
-    parser.add_argument("--eval_freq", default=20,
+    parser.add_argument("--eval_freq", default=30,
                         help="训练过程中评估模型的频率，即多少个 iteration 评估一次模型")
     parser.add_argument("--train_batch_size", default=320, type=int,
                         help="Total batch size for training.")
@@ -153,7 +237,7 @@ def run_args():
                         help="Total batch size for eval.")
     parser.add_argument("--infer_batch_size", default=480, type=int,
                         help="Total batch size for infer.")
-    parser.add_argument("--learning_rate", default=1e-5, type=float,
+    parser.add_argument("--learning_rate", default=4e-5, type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--num_train_epochs", default=5, type=float,
                         help="Total number of training epochs to perform.")
@@ -231,7 +315,7 @@ def main():
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
-    processor = ConllProcessor(args.max_seq_length, args.bert_model)
+    processor = NerChProcessor(args.max_seq_length, args.bert_model)
 
     train_features = None
     num_train_optimization_steps = None
@@ -448,7 +532,7 @@ def main():
             for i in range(len(tag_pred)):
                 sent_words = ""
                 sent_tags = ""
-                for j in range(input_mask.sum().tolist()):
+                for j in range(input_mask[i].sum().tolist()):
                     sent_words += vocab_dict.get(input_ids[i].tolist()[j]) + " "
                     sent_tags += processor.label_dict_inv.get(tag_pred[i].tolist()[j]) + " "
                 print(sent_words)
