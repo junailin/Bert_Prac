@@ -28,7 +28,7 @@ class BertCnn(BertPreTrainedModel):
             "filter_channel": 32
         }
         self.conv = convolution(in_channel=1,
-                                seq_length=self.seq_len,
+                                word_emb_size=config.hidden_size,
                                 filter_height=conv_config["filter_height"],
                                 filter_channel=conv_config["filter_channel"])
 
@@ -55,6 +55,7 @@ class BertCnn(BertPreTrainedModel):
 
         # ----- 池化层 -----
         seq_ap_out = self.ap(seq_conv_out)  # shape: [batch_size, filter_channel, 1, 1]
+
         seq_ap_out = torch.squeeze(seq_ap_out)  # shape: [batch_size, filter_channel]
 
         # ----- 全连接层 -----
@@ -63,11 +64,11 @@ class BertCnn(BertPreTrainedModel):
         return logits
 
 
-def convolution(in_channel, seq_length, filter_height, filter_channel):
+def convolution(in_channel, word_emb_size, filter_height, filter_channel):
     """
     卷积层
     :param in_channel: 通常是 1
-    :param seq_length: 就是句子长度，也即卷积层宽度
+    :param word_emb_size: 就是句子长度，也即卷积层宽度
     :param filter_height: 一次考虑多少个单词
     :param filter_channel: 卷积之后的channel个数
     :return: 卷积层模型
@@ -75,7 +76,7 @@ def convolution(in_channel, seq_length, filter_height, filter_channel):
     模型输入shape：[batch_size, channel_in, seq_len, emb_size]
     模型输出shape：[batch_size, filter_channel, seq_len-filter_height+1, 1]
     """
-    filter_width = seq_length
+    filter_width = word_emb_size
     model = nn.Sequential(
         nn.Conv2d(in_channel, filter_channel, (filter_height, filter_width), stride=1),
         nn.BatchNorm2d(filter_channel),
