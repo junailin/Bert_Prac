@@ -33,8 +33,8 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
-from util.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 from models.bert import BertForSequenceClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
+from models.bert_cnn import BertCnn
 from util.tokenization import BertTokenizer
 from util.optimization import BertAdam, warmup_linear
 from util.parallel import DataParallelModel, DataParallelCriterion
@@ -44,72 +44,6 @@ logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(messa
                     datefmt = '%m/%d/%Y %H:%M:%S',
                     level = logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-class MrpcProcessor(DataProcessor):
-    """Processor for the MRPC data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in enumerate(lines):
-            if i == 0:
-                continue
-            guid = "%s-%s" % (set_type, i)
-            text_a = line[3]
-            text_b = line[4]
-            label = line[0]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
-        return examples
-
-
-class MnliProcessor(DataProcessor):
-    """Processor for the MultiNLI data set (GLUE version)."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev_matched.tsv")),
-            "dev_matched")
-
-    def get_labels(self):
-        """See base class."""
-        return ["contradiction", "entailment", "neutral"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in enumerate(lines):
-            if i == 0:
-                continue
-            guid = "%s-%s" % (set_type, line[0])
-            text_a = line[8]
-            text_b = line[9]
-            label = line[-1]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
-        return examples
 
 
 class ColaProcessor(DataProcessor):
@@ -157,13 +91,18 @@ def run_args():
                         help="填bert预训练模型(或者是已经fine-tune的模型)的路径，路径下必须包括以下三个文件："
                              "pytorch_model.bin  vocab.txt  bert_config.json")
     parser.add_argument("--output_dir",
-                        default="/workspace/train_output/test", type=str,
+                        default="/workspace/train_output/cola_test", type=str,
                         help="训练好的模型的保存地址")
+    parser.add_argument("--upper_model",
+                        default="CNN", type=str,
+                        help="从这几个模型中选择："
+                             "   Linear"
+                             "   CNN")
 
     # ----- 重要 parameters -----
     parser.add_argument("--max_seq_length", default=64, type=int,
                         help="最大序列长度（piece tokenize 之后的）")
-    parser.add_argument("--eval_freq", default=1000,
+    parser.add_argument("--eval_freq", default=20,
                         help="训练过程中评估模型的频率，即多少个 iteration 评估一次模型")
     parser.add_argument("--train_batch_size", default=480, type=int,
                         help="Total batch size for training.")
@@ -217,18 +156,6 @@ def main():
         ptvsd.enable_attach(address=(args.server_ip, args.server_port), redirect_output=True)
         ptvsd.wait_for_attach()
 
-    processors = {
-        "cola": ColaProcessor,
-        "mnli": MnliProcessor,
-        "mrpc": MrpcProcessor,
-    }
-
-    num_labels_task = {
-        "cola": 2,
-        "mnli": 3,
-        "mrpc": 2,
-    }
-
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
         n_gpu = torch.cuda.device_count()
@@ -261,14 +188,9 @@ def main():
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
-    task_name = args.task_name.lower()
-
-    if task_name not in processors:
-        raise ValueError("Task not found: %s" % (task_name))
-
-    processor = processors[task_name]()
-    num_labels = num_labels_task[task_name]
+    processor = ColaProcessor()
     label_list = processor.get_labels()
+    num_labels = len(label_list)
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
 
@@ -282,7 +204,15 @@ def main():
             num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size()
 
     # Prepare model
-    model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels = num_labels)
+    if args.upper_model == "Linear":
+        model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
+    elif args.upper_model == "CNN":
+        model = BertCnn.from_pretrained(args.bert_model,
+                                        num_labels=num_labels,
+                                        seq_len=args.max_seq_length)
+    else:
+        model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
+
     if args.fp16:
         model.half()
     model.to(device)
@@ -291,7 +221,6 @@ def main():
             from apex.parallel import DistributedDataParallel as DDP
         except ImportError:
             raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
-
         model = DDP(model)
     elif n_gpu > 1:
         # model = torch.nn.DataParallel(model)
