@@ -19,6 +19,7 @@ from __future__ import absolute_import, division, print_function
 
 import argparse
 import logging
+import collections
 import os
 
 curr_dir = os.path.dirname(os.path.realpath(__file__))
@@ -62,7 +63,7 @@ class AntProcessorA(DataProcessor):
 
     def get_infer_examples(self, data_dir):
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "atec_test5000_balanced.csv")), "infer")
+            self._read_tsv(os.path.join(data_dir, "atec_test.csv")), "infer")
 
     def get_labels(self):
         """See base class."""
@@ -95,7 +96,7 @@ class AntProcessorB(DataProcessor):
 
     def get_infer_examples(self, data_dir):
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "atec_test5000_balanced.csv")), "infer")
+            self._read_tsv(os.path.join(data_dir, "atec_test.csv")), "infer")
 
     def get_labels(self):
         """See base class."""
@@ -118,14 +119,14 @@ def run_args():
 
     # ----- Required parameters -----
     parser.add_argument("--data_dir",
-                        default="/workspace/dataset/ant_dataset", type=str,
+                        default="/workspace/project/Bert_Prac", type=str,
                         help="训练数据的目录，这个和XxxProcessor是对应的")
     parser.add_argument("--bert_model",
-                        default="/workspace/pretrained_models/bert_ch", type=str,
+                        default="/workspace/train_output/ant_sim_test2", type=str,
                         help="填bert预训练模型(或者是已经fine-tune的模型)的路径，路径下必须包括以下三个文件："
                              "pytorch_model.bin  vocab.txt  bert_config.json")
     parser.add_argument("--output_dir",
-                        default="/workspace/train_output/ant_sim_test", type=str,
+                        default="/workspace/train_output/test", type=str,
                         help="训练好的模型的保存地址")
     parser.add_argument("--upper_model",
                         default="BiMPM", type=str,
@@ -137,7 +138,7 @@ def run_args():
     # ----- 重要 parameters -----
     parser.add_argument("--max_seq_length", default=30, type=int,
                         help="最大序列长度（piece tokenize 之后的）")
-    parser.add_argument("--eval_freq", default=30,
+    parser.add_argument("--eval_freq", default=200,
                         help="训练过程中评估模型的频率，即多少个 iteration 评估一次模型")
     parser.add_argument("--train_batch_size", default=480, type=int,
                         help="Total batch size for training.")
@@ -147,7 +148,7 @@ def run_args():
                         help="Total batch size for infer.")
     parser.add_argument("--learning_rate", default=2e-5, type=float,
                         help="The initial learning rate for Adam.")
-    parser.add_argument("--num_train_epochs", default=10, type=float,
+    parser.add_argument("--num_train_epochs", default=5, type=float,
                         help="Total number of training epochs to perform.")
 
     # ----- 其他 parameters -----
@@ -439,6 +440,18 @@ def main():
             f.write(model_to_save.config.to_json_string())
 
     if args.do_infer:
+        # 加载词典 (仅仅用于可视化评估)
+        vocab_dict = collections.OrderedDict()
+        index = 0
+        with open(os.path.join(args.bert_model, "vocab.txt"), "r", encoding="utf-8") as reader:
+            while True:
+                token = reader.readline()
+                if not token:
+                    break
+                token = token.strip()
+                vocab_dict[index] = token
+                index += 1
+
         infer_examples_a = processor_a.get_infer_examples(args.data_dir)
         infer_examples_b = processor_b.get_infer_examples(args.data_dir)
         infer_features_a = convert_examples_to_features(
@@ -477,7 +490,15 @@ def main():
             infer_preds = torch.cat(infer_preds)  # shape: [batch_size, num_labels]
             logits = infer_preds.detach().cpu().numpy()
             outputs = np.argmax(logits, axis=1)
-            print(outputs)
+            # 打印预测结果
+            for i in range(len(input_ids_a)):
+                sent_a = ""
+                for j in range(len(input_ids_a[i])):
+                    sent_a += vocab_dict.get(input_ids_a[i].tolist()[j]) + " "
+                sent_b = ""
+                for j in range(len(input_ids_b[i])):
+                    sent_b += vocab_dict.get(input_ids_b[i].tolist()[j]) + " "
+                print(sent_a, "\t", sent_b, "\t", outputs[i])
         logger.info("***** Infer finished *****")
 
 
