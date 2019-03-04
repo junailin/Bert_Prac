@@ -217,7 +217,10 @@ class BingjianFrenchProcessor(object):
         self.seq_length = seq_length
         self.vocab = load_vocab(os.path.join(bert_dir, "vocab.txt"))
         self.wordpiece_tokenizer = WordpieceTokenizer(vocab=self.vocab)
-        self.labels = ['O', 'I-PER', 'I-LOC', 'I-ORG', 'I-MISC', 'B-MISC', 'B-LOC', 'B-ORG', 'B-PER',
+        self.labels = ["I-PER", "B-PER",
+                       "I-LOC", "B-LOC",
+                       "I-ORG", "B-ORG",
+                       "I-MISC", "B-MISC", "O",
                        "[PAD]", "[CLS]", "[SEP]"]
         self.label_dict = {label: i for i, label in enumerate(self.labels)}
         self.label_dict_inv = {i: label for i, label in enumerate(self.labels)}
@@ -240,8 +243,10 @@ class BingjianFrenchProcessor(object):
         index = 0
         sent_words_list = []
         sent_tags_list = []
+        sent_orig = []
         num_total_words = 0
         num_unk_words = 0
+        sent_counter = 0
         while True:
             if index >= 0:
                 line = fr.readline()
@@ -250,6 +255,7 @@ class BingjianFrenchProcessor(object):
                 line = line.strip().split(" ")
                 if len(line) > 1:
                     num_total_words += 1
+                    sent_orig.append(line[0])
                     if self.vocab.get(line[0]) is not None:
                         sent_words_list.append(line[0])
                     else:
@@ -261,6 +267,7 @@ class BingjianFrenchProcessor(object):
                 else:
                     if len(sent_words_list) > 0:
                         # 准备好了一个句子，把它变成 bert features
+                        sent_counter += 1
                         if len(sent_words_list) > self.seq_length - 2:
                             sent_words_list = sent_words_list[:(self.seq_length-2)]
                             sent_tags_list = sent_tags_list[:(self.seq_length-2)]
@@ -283,8 +290,19 @@ class BingjianFrenchProcessor(object):
                             tag_ids.append(self.label_dict.get(tag))
                         if tag_ids is None:
                             print("tag_ids is None!!!")
+                        if sent_counter < 6:
+                            print("原始句子:\t", sent_orig)
+                            print("sentence:\t", sent_words_list)
+                            print("tags:\t", sent_tags_list)
+                            print("input_ids:\t", input_ids)
+                            print("input_mask:\t", input_mask)
+                            print("segment_ids:\t", segment_ids)
+                            print("tag_ids:\t", tag_ids)
+                            print()
+
                         sent_words_list = []
                         sent_tags_list = []
+                        sent_orig = []
                         features.append(
                             InputFeatures(
                                 input_ids=input_ids,
@@ -293,6 +311,7 @@ class BingjianFrenchProcessor(object):
                                 label_id=tag_ids
                             )
                         )
+
             index += 1
         fr.close()
         print("\n", file_name, "中的 UNK 比例为", (num_unk_words/num_total_words), "\n")
@@ -387,20 +406,20 @@ def run_args():
 
     # ----- Required parameters -----
     parser.add_argument("--data_dir",
-                        default="/workspace/dataset/bingjian/alb", type=str,
+                        default="/workspace/dataset/bingjian/french", type=str,
                         help="训练数据的目录，这个和XxxProcessor是对应的")
     parser.add_argument("--bert_model",
-                        default="/workspace/pretrained_models/bert_multi", type=str,
+                        default="/workspace/train_output/ner_bingjian_french_5epoch", type=str,
                         help="填bert预训练模型(或者是已经fine-tune的模型)的路径，路径下必须包括以下三个文件："
                              "pytorch_model.bin  vocab.txt  bert_config.json")
     parser.add_argument("--output_dir",
-                        default="/workspace/train_output/ner_bingjian_alb_5epoch", type=str,
+                        default="/workspace/train_output/ner_bingjian_french_10epoch/", type=str,
                         help="训练好的模型的保存地址")
 
     # ----- 重要 parameters -----
     parser.add_argument("--max_seq_length", default=64, type=int,
                         help="最大序列长度（piece tokenize 之后的）")
-    parser.add_argument("--eval_freq", default=10,
+    parser.add_argument("--eval_freq", default=50,
                         help="训练过程中评估模型的频率，即多少个 iteration 评估一次模型")
     parser.add_argument("--train_batch_size", default=320, type=int,
                         help="Total batch size for training.")
@@ -408,7 +427,7 @@ def run_args():
                         help="Total batch size for eval.")
     parser.add_argument("--infer_batch_size", default=480, type=int,
                         help="Total batch size for infer.")
-    parser.add_argument("--learning_rate", default=2e-5, type=float,
+    parser.add_argument("--learning_rate", default=1e-5, type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--num_train_epochs", default=5, type=float,
                         help="Total number of training epochs to perform.")
@@ -486,7 +505,7 @@ def main():
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
-    processor = BingjianAlbProcessor(args.max_seq_length, args.bert_model)
+    processor = BingjianFrenchProcessor(args.max_seq_length, args.bert_model)
 
     train_features = None
     num_train_optimization_steps = None
@@ -545,6 +564,19 @@ def main():
     global_step = 0
     nb_tr_steps = 0
     tr_loss = 0
+
+    # 加载词典 (仅仅用于可视化评估)
+    vocab_dict = collections.OrderedDict()
+    index = 0
+    with open(os.path.join(args.bert_model, "vocab.txt"), "r", encoding="utf-8") as reader:
+        while True:
+            token = reader.readline()
+            if not token:
+                break
+            token = token.strip()
+            vocab_dict[index] = token
+            index += 1
+
     if args.do_train:
         eval_features = processor.get_dev_features(args.data_dir)
         logger.info("***** Running training *****")
@@ -644,6 +676,23 @@ def main():
                         correct_count_all += correct_count
                         count_all += input_mask.long().sum().tolist()
 
+                        logger.info("***** Eval examples *****")
+                        show_sent_words = ""
+                        show_sent_tags_stan = ""
+                        show_sent_tags_pred = ""
+                        for i in range(5):
+                            for j in range(input_mask[i].sum().tolist()):
+                                show_sent_words += vocab_dict.get(input_ids[i].tolist()[j]) + " "
+                                show_sent_tags_pred += processor.label_dict_inv.get(tag_pred[i].tolist()[j]) + " "
+                                show_sent_tags_stan += processor.label_dict_inv.get(label_ids[i].tolist()[j]) + " "
+                            print("句子:\t", show_sent_words)
+                            print("预测的tags:\t", show_sent_tags_pred)
+                            print("正确的tags:\t", show_sent_tags_stan)
+                            print()
+                            show_sent_words = ""
+                            show_sent_tags_stan = ""
+                            show_sent_tags_pred = ""
+
                     eval_accuracy = correct_count_all / count_all
                     logger.info("***** Eval results *****")
                     logger.info("eval_accuracy = %f", eval_accuracy)
@@ -663,18 +712,6 @@ def main():
             f.write(model_to_save.config.to_json_string())
 
     if args.do_infer:
-        # 加载词典
-        vocab_dict = collections.OrderedDict()
-        index = 0
-        with open(os.path.join(args.bert_model, "vocab.txt"), "r", encoding="utf-8") as reader:
-            while True:
-                token = reader.readline()
-                if not token:
-                    break
-                token = token.strip()
-                vocab_dict[index] = token
-                index += 1
-
         test_features = processor.get_test_features(args.data_dir)
         logger.info("***** Running inference *****")
         logger.info("  Num examples = %d", len(test_features))
