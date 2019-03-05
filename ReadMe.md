@@ -15,3 +15,11 @@
 
 不重要：
 - siamese_bert_abcnn.py的代码结构要调整，abcnn的部分不应该写在该文件中
+
+# 修改
+参数 -- 类
+数据输入，标准的pandas
+APP类实例.train()
+fp16
+多gpu和单gpu可调，负载均衡可调
+bert接口独立出来
