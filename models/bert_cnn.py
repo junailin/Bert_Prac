@@ -1,12 +1,8 @@
 from __future__ import print_function, absolute_import
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch
-import torch.autograd as autograd
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn import CrossEntropyLoss
 
-from models.bert import BertPreTrainedModel, BertModel
+from building_blocks.blocks.bert import BertPreTrainedModel, BertModel
 
 
 class BertCnn(BertPreTrainedModel):

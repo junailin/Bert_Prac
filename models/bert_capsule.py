@@ -1,8 +1,8 @@
 from __future__ import print_function, absolute_import
 import torch.nn as nn
 import torch
-from models.bert import BertPreTrainedModel, BertModel
-from models.building_blocks.capsule import CapsuleNetwork
+from building_blocks.blocks.bert import BertPreTrainedModel, BertModel
+from building_blocks.blocks.capsule import CapsuleNetwork
 
 
 class BertCapsule(BertPreTrainedModel):

@@ -19,12 +19,11 @@ from __future__ import absolute_import, division, print_function
 
 import argparse
 import logging
-import collections
 import os
 
 curr_dir = os.path.dirname(os.path.realpath(__file__))
+# sys.path.append(os.path.join(curr_dir, '../'))
 import random
-from torch.nn import CrossEntropyLoss
 
 import numpy as np
 import torch
@@ -33,14 +32,12 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
-from models.bert import WEIGHTS_NAME, CONFIG_NAME
+from building_blocks.blocks.bert import BertForSequenceClassification, WEIGHTS_NAME, CONFIG_NAME
+from models.bert_cnn import BertCnn
+from models.bert_capsule import BertCapsule
 from util.tokenization import BertTokenizer
 from util.optimization import BertAdam, warmup_linear
-from util.parallel import DataParallelModel, DataParallelCriterion
-from util.utils import DataProcessor, InputExample, convert_examples_to_features, accuracy
-from models.siamese_bert import SimJustBert
-from models.siamese_bert_bimpm import SimBertBiMPM
-from models.siamese_bert_abcnn import SimBertABCNN1
+from util.utils import DataProcessor, InputExample, convert_examples_to_features
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
@@ -48,22 +45,22 @@ logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(messa
 logger = logging.getLogger(__name__)
 
 
-class AntProcessorA(DataProcessor):
-    """Processor for the Ant data set."""
+class ColaProcessor(DataProcessor):
+    """Processor for the CoLA data set (GLUE version)."""
 
     def get_train_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "atec_train160000_balanced.csv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "atec_test5000_balanced.csv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
 
     def get_infer_examples(self, data_dir):
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "atec_test.csv")), "infer")
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "infer")
 
     def get_labels(self):
         """See base class."""
@@ -72,75 +69,55 @@ class AntProcessorA(DataProcessor):
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
         examples = []
-        for (i, line) in enumerate(lines[1:]):
-            guid = "%s-%s" % (set_type, i)
-            text_a = line[2]
-            label = line[4]
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
-        return examples
-
-
-class AntProcessorB(DataProcessor):
-    """Processor for the Ant data set."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "atec_train160000_balanced.csv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "atec_test5000_balanced.csv")), "dev")
-
-    def get_infer_examples(self, data_dir):
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "atec_test.csv")), "infer")
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in enumerate(lines[1:]):
+        for (i, line) in enumerate(lines):
             guid = "%s-%s" % (set_type, i)
             text_a = line[3]
-            label = line[4]
+            label = line[1]
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
         return examples
 
 
-def run_args():
-    parser = argparse.ArgumentParser()
+def capsule_args(parser):
+    parser.add_argument("--conv_out_channels", default=256, type=int)
+    parser.add_argument("--conv_kernel_height", default=2, type=int)
+    parser.add_argument("--conv_kernel_width", default=768, type=int)
+
+    parser.add_argument("--num_primary_units", default=8, type=int)
+    parser.add_argument("--conv_unit_out_channel", default=32, type=int)
+    parser.add_argument("--conv_unit_kernel_height", default=2, type=int)
+    parser.add_argument("--conv_unit_kernel_width", default=1, type=int)
+
+    parser.add_argument("--output_unit_size", default=16, type=int)
+
+
+def task_cola_args(parser):
 
     # ----- Required parameters -----
     parser.add_argument("--data_dir",
-                        default="/workspace/project/Bert_Prac", type=str,
+                        default="/workspace/dataset/CoLA", type=str,
                         help="训练数据的目录，这个和XxxProcessor是对应的")
     parser.add_argument("--bert_model",
-                        default="/workspace/train_output/ant_sim_test2", type=str,
+                        default="/workspace/pretrained_models/bert_en", type=str,
                         help="填bert预训练模型(或者是已经fine-tune的模型)的路径，路径下必须包括以下三个文件："
                              "pytorch_model.bin  vocab.txt  bert_config.json")
     parser.add_argument("--output_dir",
-                        default="/workspace/train_output/test", type=str,
+                        default="/workspace/train_output/cola_test", type=str,
                         help="训练好的模型的保存地址")
     parser.add_argument("--upper_model",
-                        default="BiMPM", type=str,
-                        help="从这几个模型中选择："
-                             "   Linear - 只用 Bert"
-                             "   BiMPM - Bert 上接 BiMPM"
-                             "   ABCNN1 - Bert 上接 ABCNN1")
+                        default="Capsule", type=str)
 
     # ----- 重要 parameters -----
-    parser.add_argument("--max_seq_length", default=30, type=int,
+    parser.add_argument("--num_labels", default=2, type=int)
+    parser.add_argument("--fix_bert", default=False, type=bool,
+                        help="是否要固定住bert")
+    parser.add_argument("--max_seq_length", default=32, type=int,
                         help="最大序列长度（piece tokenize 之后的）")
-    parser.add_argument("--eval_freq", default=200,
+    parser.add_argument("--dropout_after_bert", default=0.1, type=int,
+                        help="bert层之后的dropout")
+    parser.add_argument("--eval_freq", default=20,
                         help="训练过程中评估模型的频率，即多少个 iteration 评估一次模型")
-    parser.add_argument("--train_batch_size", default=480, type=int,
+    parser.add_argument("--train_batch_size", default=320, type=int,
                         help="Total batch size for training.")
     parser.add_argument("--eval_batch_size", default=480, type=int,
                         help="Total batch size for eval.")
@@ -179,11 +156,13 @@ def run_args():
     parser.add_argument('--server_port', type=str, default='',
                         help="Can be used for distant debugging.")
 
-    return parser.parse_args()
-
 
 def main():
-    args = run_args()
+    # ----- 准备参数 -----
+    parser = argparse.ArgumentParser()
+    task_cola_args(parser)
+    capsule_args(parser)
+    args = parser.parse_args()
 
     if args.server_ip and args.server_port:
         # Distant debugging - see https://code.visualstudio.com/docs/python/debugging#_attach-to-a-local-script
@@ -224,34 +203,33 @@ def main():
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
-    processor_a = AntProcessorA()
-    processor_b = AntProcessorB()
-    label_list = processor_a.get_labels()
+    processor = ColaProcessor()
+    label_list = processor.get_labels()
     num_labels = len(label_list)
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
 
-    train_examples_a = None
-    train_examples_b = None
+    train_examples = None
     num_train_optimization_steps = None
     if args.do_train:
-        train_examples_a = processor_a.get_train_examples(args.data_dir)
-        train_examples_b = processor_b.get_train_examples(args.data_dir)
+        train_examples = processor.get_train_examples(args.data_dir)
         num_train_optimization_steps = int(
-            len(train_examples_a) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
+            len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
         if args.local_rank != -1:
             num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size()
 
-    # ----- Prepare model -----
-    logger.info("Bert 的上层模型是：%s", args.upper_model)
-    if args.upper_model == "Linear":  # 根据参数进行模型选择
-        model = SimJustBert.from_pretrained(args.bert_model, num_labels=num_labels)
-    elif args.upper_model == "BiMPM":
-        model = SimBertBiMPM.from_pretrained(args.bert_model, num_labels=num_labels)
-    elif args.upper_model == "ABCNN1":
-        model = SimBertABCNN1.from_pretrained(args.bert_model, num_labels=num_labels, args=args)
+    # Prepare model
+    if args.upper_model == "Linear":
+        model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
+    elif args.upper_model == "CNN":
+        model = BertCnn.from_pretrained(args.bert_model,
+                                        num_labels=num_labels,
+                                        seq_len=args.max_seq_length)
+    elif args.upper_model == "Capsule":
+        model = BertCapsule.from_pretrained(args.bert_model, capsule_config=args, task_config=args)
     else:
-        model = SimJustBert.from_pretrained(args.bert_model, num_labels=num_labels)
+        model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
+
     if args.fp16:
         model.half()
     model.to(device)
@@ -262,10 +240,10 @@ def main():
             raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
         model = DDP(model)
     elif n_gpu > 1:
-        # model = torch.nn.DataParallel(model)  # 无负载均衡
-        model = DataParallelModel(model)  # 使用了负载均衡
+        model = torch.nn.DataParallel(model)
+        # model = DataParallelModel(model)  # todo 如何加入负载均衡
 
-    # ----- Prepare optimizer -----
+    # Prepare optimizer
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
     optimizer_grouped_parameters = [
@@ -294,35 +272,24 @@ def main():
                              warmup=args.warmup_proportion,
                              t_total=num_train_optimization_steps)
 
-    # ----- 训练优化 -----
     global_step = 0
     nb_tr_steps = 0
     tr_loss = 0
     if args.do_train:
-        train_features_a = convert_examples_to_features(
-            train_examples_a, label_list, args.max_seq_length, tokenizer)
-        train_features_b = convert_examples_to_features(
-            train_examples_b, label_list, args.max_seq_length, tokenizer)
-        eval_examples_a = processor_a.get_dev_examples(args.data_dir)
-        eval_examples_b = processor_b.get_dev_examples(args.data_dir)
-        eval_features_a = convert_examples_to_features(
-            eval_examples_a, label_list, args.max_seq_length, tokenizer)
-        eval_features_b = convert_examples_to_features(
-            eval_examples_b, label_list, args.max_seq_length, tokenizer)
+        train_features = convert_examples_to_features(
+            train_examples, label_list, args.max_seq_length, tokenizer)
+        eval_examples = processor.get_dev_examples(args.data_dir)
+        eval_features = convert_examples_to_features(
+            eval_examples, label_list, args.max_seq_length, tokenizer)
         logger.info("***** Running training *****")
-        logger.info("  Num examples = %d", len(train_examples_a))
+        logger.info("  Num examples = %d", len(train_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_optimization_steps)
-        all_input_ids_a = torch.tensor([f.input_ids for f in train_features_a], dtype=torch.long)
-        all_input_mask_a = torch.tensor([f.input_mask for f in train_features_a], dtype=torch.long)
-        all_segment_ids_a = torch.tensor([f.segment_ids for f in train_features_a], dtype=torch.long)
-        all_input_ids_b = torch.tensor([f.input_ids for f in train_features_b], dtype=torch.long)
-        all_input_mask_b = torch.tensor([f.input_mask for f in train_features_b], dtype=torch.long)
-        all_segment_ids_b = torch.tensor([f.segment_ids for f in train_features_b], dtype=torch.long)
-        all_label_ids = torch.tensor([f.label_id for f in train_features_a], dtype=torch.long)
-        train_data = TensorDataset(all_input_ids_a, all_input_ids_b,
-                                   all_input_mask_a, all_input_mask_b,
-                                   all_segment_ids_a, all_segment_ids_b, all_label_ids)
+        all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
+        all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
+        all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
+        all_label_ids = torch.tensor([f.label_id for f in train_features], dtype=torch.long)
+        train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_data)
         else:
@@ -335,14 +302,9 @@ def main():
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 model.train()
                 batch = tuple(t.to(device) for t in batch)
-                input_ids_a, input_ids_b, token_type_ids_a, token_type_ids_b, attention_mask_a, attention_mask_b, label_ids = batch
-                predictions = model(input_ids_a, input_ids_b, token_type_ids_a, token_type_ids_b,
-                                    attention_mask_a, attention_mask_b, label_ids)
-                for i in range(len(predictions)):
-                    predictions[i] = predictions[i].view(-1, num_labels)
-                loss_fct = CrossEntropyLoss()
-                loss_fct_parallel = DataParallelCriterion(loss_fct)
-                loss = loss_fct_parallel(predictions, label_ids.view(-1))
+                input_ids, input_mask, segment_ids, label_ids = batch
+                out_digits, seq_emb = model(input_ids, segment_ids, input_mask, label_ids)
+                loss = model.loss(seq_emb, out_digits, label_ids)
                 if n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
@@ -354,7 +316,7 @@ def main():
                     loss.backward()
 
                 tr_loss += loss.item()
-                nb_tr_examples += label_ids.size(0)
+                nb_tr_examples += input_ids.size(0)
                 nb_tr_steps += 1
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     if args.fp16:
@@ -370,19 +332,13 @@ def main():
                 # do eval
                 if global_step % args.eval_freq == 0 and global_step > 0:
                     logger.info("***** Running evaluation *****")
-                    logger.info("  Num examples = %d", len(eval_examples_a))
+                    logger.info("  Num examples = %d", len(eval_examples))
                     logger.info("  Batch size = %d", args.eval_batch_size)
-                    all_input_ids_a = torch.tensor([f.input_ids for f in eval_features_a], dtype=torch.long)
-                    all_input_mask_a = torch.tensor([f.input_mask for f in eval_features_a], dtype=torch.long)
-                    all_segment_ids_a = torch.tensor([f.segment_ids for f in eval_features_a], dtype=torch.long)
-                    all_input_ids_b = torch.tensor([f.input_ids for f in eval_features_b], dtype=torch.long)
-                    all_input_mask_b = torch.tensor([f.input_mask for f in eval_features_b], dtype=torch.long)
-                    all_segment_ids_b = torch.tensor([f.segment_ids for f in eval_features_b], dtype=torch.long)
-                    all_label_ids = torch.tensor([f.label_id for f in eval_features_a], dtype=torch.long)
-                    eval_data = TensorDataset(all_input_ids_a, all_input_ids_b,
-                                              all_input_mask_a, all_input_mask_b,
-                                              all_segment_ids_a, all_segment_ids_b,
-                                              all_label_ids)
+                    all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
+                    all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
+                    all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
+                    all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.long)
+                    eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
                     # Run prediction for full data
                     eval_sampler = SequentialSampler(eval_data)
                     eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
@@ -391,39 +347,33 @@ def main():
                     eval_loss, eval_accuracy = 0, 0
                     nb_eval_steps, nb_eval_examples = 0, 0
 
-                    for eval_batch in tqdm(eval_dataloader, desc="Evaluating"):
-                        eval_batch = tuple(t.to(device) for t in eval_batch)
-                        input_ids_a, input_ids_b, token_type_ids_a, token_type_ids_b, attention_mask_a, attention_mask_b, label_ids = eval_batch
+                    for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
+                        input_ids = input_ids.to(device)
+                        input_mask = input_mask.to(device)
+                        segment_ids = segment_ids.to(device)
+                        label_ids = label_ids.to(device)
+
                         with torch.no_grad():
-                            eval_preds = model(input_ids_a, input_ids_b, token_type_ids_a, token_type_ids_b,
-                                               attention_mask_a, attention_mask_b, label_ids)
+                            out_digits, seq_emb = model(input_ids, segment_ids, input_mask, label_ids)
 
                         # 计算loss
-                        for i in range(len(eval_preds)):
-                            eval_preds[i] = eval_preds[i].view(-1, num_labels)
-                        loss = loss_fct_parallel(eval_preds, label_ids.view(-1))
+                        loss = model.loss(seq_emb, out_digits, label_ids)
+
                         if n_gpu > 1:
                             loss = loss.mean()  # mean() to average on multi-gpu.
                         if args.gradient_accumulation_steps > 1:
                             loss = loss / args.gradient_accumulation_steps
                         tmp_eval_loss = loss
-
-                        eval_preds = torch.cat(eval_preds)  # shape: [batch_size, num_labels]
-                        logits = eval_preds.detach().cpu().numpy()
-                        label_ids = label_ids.to('cpu').numpy()
-                        tmp_eval_accuracy = accuracy(logits, label_ids)
-
                         eval_loss += tmp_eval_loss.mean().item()
-                        eval_accuracy += tmp_eval_accuracy
 
-                        nb_eval_examples += input_ids_a.size(0)
+                        # todo 准确率测试
+
+                        nb_eval_examples += input_ids.size(0)
                         nb_eval_steps += 1
 
                     eval_loss = eval_loss / nb_eval_steps
-                    eval_accuracy = eval_accuracy / nb_eval_examples
                     loss = tr_loss / nb_tr_steps if args.do_train else None
                     result = {'eval_loss': eval_loss,
-                              'eval_accuracy': eval_accuracy,
                               'global_step': global_step,
                               'loss': loss}
                     logger.info("***** Eval results *****")
@@ -440,49 +390,31 @@ def main():
             f.write(model_to_save.config.to_json_string())
 
     if args.do_infer:
-        # 加载词典 (仅仅用于可视化评估)
-        vocab_dict = collections.OrderedDict()
-        index = 0
-        with open(os.path.join(args.bert_model, "vocab.txt"), "r", encoding="utf-8") as reader:
-            while True:
-                token = reader.readline()
-                if not token:
-                    break
-                token = token.strip()
-                vocab_dict[index] = token
-                index += 1
-
-        infer_examples_a = processor_a.get_infer_examples(args.data_dir)
-        infer_examples_b = processor_b.get_infer_examples(args.data_dir)
-        infer_features_a = convert_examples_to_features(
-            infer_examples_a, label_list, args.max_seq_length, tokenizer)
-        infer_features_b = convert_examples_to_features(
-            infer_examples_b, label_list, args.max_seq_length, tokenizer)
+        infer_examples = processor.get_infer_examples(args.data_dir)
+        infer_features = convert_examples_to_features(
+            infer_examples, label_list, args.max_seq_length, tokenizer)
         logger.info("***** Running Inference *****")
-        logger.info("  Num examples = %d", len(infer_examples_a))
+        logger.info("  Num examples = %d", len(infer_examples))
         logger.info("  Batch size = %d", args.infer_batch_size)
-        all_input_ids_a = torch.tensor([f.input_ids for f in infer_features_a], dtype=torch.long)
-        all_input_mask_a = torch.tensor([f.input_mask for f in infer_features_a], dtype=torch.long)
-        all_segment_ids_a = torch.tensor([f.segment_ids for f in infer_features_a], dtype=torch.long)
-        all_input_ids_b = torch.tensor([f.input_ids for f in infer_features_b], dtype=torch.long)
-        all_input_mask_b = torch.tensor([f.input_mask for f in infer_features_b], dtype=torch.long)
-        all_segment_ids_b = torch.tensor([f.segment_ids for f in infer_features_b], dtype=torch.long)
-        all_label_ids = torch.tensor([f.label_id for f in infer_features_a], dtype=torch.long)
-        infer_data = TensorDataset(all_input_ids_a, all_input_ids_b,
-                                   all_input_mask_a, all_input_mask_b,
-                                   all_segment_ids_a, all_segment_ids_b,
-                                   all_label_ids)
+        all_input_ids = torch.tensor([f.input_ids for f in infer_features], dtype=torch.long)
+        all_input_mask = torch.tensor([f.input_mask for f in infer_features], dtype=torch.long)
+        all_segment_ids = torch.tensor([f.segment_ids for f in infer_features], dtype=torch.long)
+        all_label_ids = torch.tensor([f.label_id for f in infer_features], dtype=torch.long)
+        infer_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
         # Run prediction for full data
         infer_sampler = SequentialSampler(infer_data)
         infer_dataloader = DataLoader(infer_data, sampler=infer_sampler, batch_size=args.infer_batch_size)
 
         model.eval()
 
-        for infer_batch in tqdm(infer_dataloader, desc="Inference"):
-            infer_batch = tuple(t.to(device) for t in infer_batch)
-            input_ids_a, input_ids_b, token_type_ids_a, token_type_ids_b, attention_mask_a, attention_mask_b, label_ids = infer_batch
+        for input_ids, input_mask, segment_ids, label_ids in tqdm(infer_dataloader, desc="Inference"):
+            input_ids = input_ids.to(device)
+            input_mask = input_mask.to(device)
+            segment_ids = segment_ids.to(device)
+            label_ids = label_ids.to(device)
+
             with torch.no_grad():
-                infer_preds = model(input_ids_a, input_ids_b, token_type_ids_a, token_type_ids_b, attention_mask_a, attention_mask_b, label_ids)
+                infer_preds = model(input_ids, segment_ids, input_mask, label_ids)
 
             for i in range(len(infer_preds)):
                 infer_preds[i] = infer_preds[i].view(-1, num_labels)
@@ -490,15 +422,7 @@ def main():
             infer_preds = torch.cat(infer_preds)  # shape: [batch_size, num_labels]
             logits = infer_preds.detach().cpu().numpy()
             outputs = np.argmax(logits, axis=1)
-            # 打印预测结果
-            for i in range(len(input_ids_a)):
-                sent_a = ""
-                for j in range(len(input_ids_a[i])):
-                    sent_a += vocab_dict.get(input_ids_a[i].tolist()[j]) + " "
-                sent_b = ""
-                for j in range(len(input_ids_b[i])):
-                    sent_b += vocab_dict.get(input_ids_b[i].tolist()[j]) + " "
-                print(sent_a, "\t", sent_b, "\t", outputs[i])
+            print(outputs)
         logger.info("***** Infer finished *****")
 
 

@@ -33,9 +33,8 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
-from models.bert import BertForSequenceClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
+from building_blocks.blocks.bert import BertForSequenceClassification, WEIGHTS_NAME, CONFIG_NAME
 from models.bert_cnn import BertCnn
-from models.bert_capsule import BertCapsule
 from util.tokenization import BertTokenizer
 from util.optimization import BertAdam, warmup_linear
 from util.parallel import DataParallelModel, DataParallelCriterion
@@ -80,20 +79,8 @@ class ColaProcessor(DataProcessor):
         return examples
 
 
-def capsule_args(parser):
-    parser.add_argument("--conv_out_channels", default=256, type=int)
-    parser.add_argument("--conv_kernel_height", default=2, type=int)
-    parser.add_argument("--conv_kernel_width", default=768, type=int)
-
-    parser.add_argument("--num_primary_units", default=8, type=int)
-    parser.add_argument("--conv_unit_out_channel", default=32, type=int)
-    parser.add_argument("--conv_unit_kernel_height", default=2, type=int)
-    parser.add_argument("--conv_unit_kernel_width", default=1, type=int)
-
-    parser.add_argument("--output_unit_size", default=16, type=int)
-
-
-def task_cola_args(parser):
+def run_args():
+    parser = argparse.ArgumentParser()
 
     # ----- Required parameters -----
     parser.add_argument("--data_dir",
@@ -107,19 +94,17 @@ def task_cola_args(parser):
                         default="/workspace/train_output/cola_test", type=str,
                         help="训练好的模型的保存地址")
     parser.add_argument("--upper_model",
-                        default="Capsule", type=str)
+                        default="CNN", type=str,
+                        help="从这几个模型中选择："
+                             "   Linear"
+                             "   CNN")
 
     # ----- 重要 parameters -----
-    parser.add_argument("--num_labels", default=2, type=int)
-    parser.add_argument("--fix_bert", default=False, type=bool,
-                        help="是否要固定住bert")
-    parser.add_argument("--max_seq_length", default=32, type=int,
+    parser.add_argument("--max_seq_length", default=64, type=int,
                         help="最大序列长度（piece tokenize 之后的）")
-    parser.add_argument("--dropout_after_bert", default=0.1, type=int,
-                        help="bert层之后的dropout")
     parser.add_argument("--eval_freq", default=20,
                         help="训练过程中评估模型的频率，即多少个 iteration 评估一次模型")
-    parser.add_argument("--train_batch_size", default=320, type=int,
+    parser.add_argument("--train_batch_size", default=480, type=int,
                         help="Total batch size for training.")
     parser.add_argument("--eval_batch_size", default=480, type=int,
                         help="Total batch size for eval.")
@@ -158,13 +143,11 @@ def task_cola_args(parser):
     parser.add_argument('--server_port', type=str, default='',
                         help="Can be used for distant debugging.")
 
+    return parser.parse_args()
+
 
 def main():
-    # ----- 准备参数 -----
-    parser = argparse.ArgumentParser()
-    task_cola_args(parser)
-    capsule_args(parser)
-    args = parser.parse_args()
+    args = run_args()
 
     if args.server_ip and args.server_port:
         # Distant debugging - see https://code.visualstudio.com/docs/python/debugging#_attach-to-a-local-script
@@ -227,8 +210,6 @@ def main():
         model = BertCnn.from_pretrained(args.bert_model,
                                         num_labels=num_labels,
                                         seq_len=args.max_seq_length)
-    elif args.upper_model == "Capsule":
-        model = BertCapsule.from_pretrained(args.bert_model, capsule_config=args, task_config=args)
     else:
         model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
 
@@ -242,8 +223,8 @@ def main():
             raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
         model = DDP(model)
     elif n_gpu > 1:
-        model = torch.nn.DataParallel(model)
-        # model = DataParallelModel(model)  # todo 如何加入负载均衡
+        # model = torch.nn.DataParallel(model)
+        model = DataParallelModel(model)
 
     # Prepare optimizer
     param_optimizer = list(model.named_parameters())
@@ -305,8 +286,12 @@ def main():
                 model.train()
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
-                out_digits, seq_emb = model(input_ids, segment_ids, input_mask, label_ids)
-                loss = model.loss(seq_emb, out_digits, label_ids)
+                predictions = model(input_ids, segment_ids, input_mask, label_ids)
+                for i in range(len(predictions)):
+                    predictions[i] = predictions[i].view(-1, num_labels)
+                loss_fct = CrossEntropyLoss()
+                loss_fct_parallel = DataParallelCriterion(loss_fct)
+                loss = loss_fct_parallel(predictions, label_ids.view(-1))
                 if n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
@@ -356,26 +341,34 @@ def main():
                         label_ids = label_ids.to(device)
 
                         with torch.no_grad():
-                            out_digits, seq_emb = model(input_ids, segment_ids, input_mask, label_ids)
+                            eval_preds = model(input_ids, segment_ids, input_mask, label_ids)
 
                         # 计算loss
-                        loss = model.loss(seq_emb, out_digits, label_ids)
-
+                        for i in range(len(eval_preds)):
+                            eval_preds[i] = eval_preds[i].view(-1, num_labels)
+                        loss = loss_fct_parallel(eval_preds, label_ids.view(-1))
                         if n_gpu > 1:
                             loss = loss.mean()  # mean() to average on multi-gpu.
                         if args.gradient_accumulation_steps > 1:
                             loss = loss / args.gradient_accumulation_steps
                         tmp_eval_loss = loss
-                        eval_loss += tmp_eval_loss.mean().item()
 
-                        # todo 准确率测试
+                        eval_preds = torch.cat(eval_preds)  # shape: [batch_size, num_labels]
+                        logits = eval_preds.detach().cpu().numpy()
+                        label_ids = label_ids.to('cpu').numpy()
+                        tmp_eval_accuracy = accuracy(logits, label_ids)
+
+                        eval_loss += tmp_eval_loss.mean().item()
+                        eval_accuracy += tmp_eval_accuracy
 
                         nb_eval_examples += input_ids.size(0)
                         nb_eval_steps += 1
 
                     eval_loss = eval_loss / nb_eval_steps
+                    eval_accuracy = eval_accuracy / nb_eval_examples
                     loss = tr_loss / nb_tr_steps if args.do_train else None
                     result = {'eval_loss': eval_loss,
+                              'eval_accuracy': eval_accuracy,
                               'global_step': global_step,
                               'loss': loss}
                     logger.info("***** Eval results *****")

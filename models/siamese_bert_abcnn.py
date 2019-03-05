@@ -4,7 +4,7 @@ from torch import nn
 import torch
 import torch.nn.functional as F
 
-from models.bert import BertPreTrainedModel, BertModel
+from building_blocks.blocks.bert import BertPreTrainedModel, BertModel
 
 
 class SimBertABCNN1(BertPreTrainedModel):

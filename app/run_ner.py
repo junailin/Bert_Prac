@@ -21,11 +21,10 @@ import argparse
 import logging
 import collections
 import os
-import sys
+
 curr_dir = os.path.dirname(os.path.realpath(__file__))
 # sys.path.append(os.path.join(curr_dir, '../'))
 import random
-from torch.nn import CrossEntropyLoss
 
 import numpy as np
 import torch
@@ -34,11 +33,10 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
-from models.bert import BertForSequenceClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
-from util.tokenization import BertTokenizer, BasicTokenizer, load_vocab, WordpieceTokenizer
+from building_blocks.blocks.bert import WEIGHTS_NAME, CONFIG_NAME
+from util.tokenization import load_vocab, WordpieceTokenizer
 from util.optimization import BertAdam, warmup_linear
-from util.parallel import DataParallelModel, DataParallelCriterion
-from util.utils import DataProcessor, InputExample, InputFeatures, convert_examples_to_features, _truncate_seq_pair, accuracy
+from util.utils import InputFeatures
 from models.bert_lstm_crf import BertLstmCrf
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',

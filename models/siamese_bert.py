@@ -1,7 +1,7 @@
 from torch import nn
 import torch
 
-from models.bert import BertPreTrainedModel, BertModel
+from building_blocks.blocks.bert import BertPreTrainedModel, BertModel
 
 
 class SimJustBert(BertPreTrainedModel):
