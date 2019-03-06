@@ -8,15 +8,16 @@ import random
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader, TensorDataset
-from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import DataLoader, TensorDataset, RandomSampler, SequentialSampler
 from tqdm import tqdm, trange
 
 from util.tokenization import BertTokenizer
 from util.optimization import BertAdam
 from util.parallel import DataParallelModel, DataParallelCriterion
 from building_blocks.blocks.bert import BertModel
-from util.my_utils import convert_pds_to_examples, convert_examples_to_features
+from util.input_utils import convert_pds_to_examples, convert_examples_to_features
+from models.text_cnn import TextCnn, TextCnnConfig
+from app.configs.run_config import RunConfig
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
@@ -24,30 +25,26 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message
 logger = logging.getLogger(__name__)
 
 
-class AppBasedOnBert(object):
+class AppClsBasedOnBert(object):
+    """ 基于 bert 的文本分类任务 """
     def __init__(self, upper_model_class, upper_model_config, run_config):
         """
         初始化应用类
         :param upper_model_class: bert的上层模型类
-        :param upper_model_config: 上层模型的配置类
+        :param upper_model_config: 上层模型的配置类的实例
         :param run_config: 运行配置类
         """
         # 模型运行参数
         self.run_config = run_config
-        self.run_config.train_batch_size = self.run_config.train_batch_size // self.run_config.gradient_accumulation_steps
+        self.upper_model_config = upper_model_config
+        self.run_config.train_batch_size = \
+            self.run_config.train_batch_size // self.run_config.gradient_accumulation_steps
 
         # 创建模型输出文件夹
         if not os.path.exists(self.run_config.output_dir):
             os.makedirs(self.run_config.output_dir)
-
-        # 实例化模型
-        self.bert_model = BertModel.from_pretrained(self.run_config.bert_model_dir)
-        self.upper_model = upper_model_class(upper_model_config)
-        if upper_model_config.pretrained_model_path is not None:  # 加载预训练模型
-            state_dict = torch.load(upper_model_config.pretrained_model_path)
-            self.upper_model.load_state_dict(state_dict)
-        self.bert_model = torch.nn.DataParallel(self.bert_model)
-        self.upper_model = torch.nn.DataParallel(self.upper_model)  # todo 考虑如何加负载均衡 (主要是loss问题)
+        if not os.path.exists(os.path.join(self.run_config.output_dir, "bert_tuned")):
+            os.makedirs(os.path.join(self.run_config.output_dir, "bert_tuned"))
 
         # 训练设备
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -62,6 +59,17 @@ class AppBasedOnBert(object):
         # 准备 bert 分词器
         self.tokenizer = BertTokenizer.from_pretrained(self.run_config.bert_model_dir,
                                                        do_lower_case=self.run_config.do_lower_case)
+
+        # 实例化模型
+        self.bert_model = BertModel.from_pretrained(self.run_config.bert_model_dir)
+        self.upper_model = upper_model_class(upper_model_config)
+        if run_config.upper_model_path is not None:  # 加载预训练模型
+            state_dict = torch.load(run_config.upper_model_path)
+            self.upper_model.load_state_dict(state_dict)
+        self.bert_model = self.bert_model.to(self.device)
+        self.upper_model = self.upper_model.to(self.device)
+        self.bert_model = torch.nn.DataParallel(self.bert_model)
+        self.upper_model = torch.nn.DataParallel(self.upper_model)  # todo 考虑如何加负载均衡 (主要是loss问题)
 
     def do_train(self, tr_sent_pds, tr_label_pds, dev_sent_pds, dev_label_pds):
         """
@@ -92,8 +100,8 @@ class AppBasedOnBert(object):
         all_label_ids = torch.tensor([f.label_id for f in dev_features], dtype=torch.long)
         dev_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
 
-        train_sampler = DistributedSampler(train_data)
-        dev_sampler = DistributedSampler(dev_data)
+        train_sampler = RandomSampler(train_data)
+        dev_sampler = SequentialSampler(dev_data)
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=self.run_config.train_batch_size)
         dev_dataloader = DataLoader(dev_data, sampler=dev_sampler, batch_size=self.run_config.eval_batch_size)
 
@@ -129,8 +137,12 @@ class AppBasedOnBert(object):
 
                 batch = tuple(t.to(self.device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
-                bert_encoded_layers, _ = self.bert_model(input_ids, segment_ids, input_mask, label_ids)
-                pred, loss = self.upper_model(bert_encoded_layers)
+                if self.run_config.fix_bert:
+                    with torch.no_grad():
+                        bert_encoded_layers, _ = self.bert_model(input_ids, segment_ids, input_mask, False)
+                else:
+                    bert_encoded_layers, _ = self.bert_model(input_ids, segment_ids, input_mask, False)
+                pred, loss = self.upper_model(bert_encoded_layers, label_ids)
                 if self.n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
                 if self.run_config.gradient_accumulation_steps > 1:
@@ -142,6 +154,12 @@ class AppBasedOnBert(object):
                     optimizer.step()
                     optimizer.zero_grad()
                     global_step += 1
+
+                # 输出训练准确率 (正式代码中删除这一段)
+                # print(pred[:100])
+                # print(label_ids[:100])
+                # tmp_train_accuracy = (pred == label_ids).sum().tolist()
+                # logger.info("===== 训练准确率 = %f", tmp_train_accuracy / len(input_ids))
 
                 # 定时 eval
                 if global_step % self.run_config.eval_freq == 0 and global_step > 0:
@@ -160,8 +178,8 @@ class AppBasedOnBert(object):
                         label_ids = label_ids.to(self.device)
 
                         with torch.no_grad():
-                            bert_encoded_layers, bert_pooled_output = self.bert_model(input_ids, segment_ids, input_mask, label_ids)
-                            pred, loss = self.upper_model(bert_encoded_layers)
+                            bert_encoded_layers, _ = self.bert_model(input_ids, segment_ids, input_mask, False)
+                            pred, loss = self.upper_model(bert_encoded_layers, label_ids)
                         if self.n_gpu > 1:
                             loss = loss.mean()  # mean() to average on multi-gpu.
                         if self.run_config.gradient_accumulation_steps > 1:
@@ -187,14 +205,16 @@ class AppBasedOnBert(object):
         # BERT: Save a trained model and the associated configuration
         model_to_save = self.bert_model.module if hasattr(self.bert_model, 'module') \
             else self.bert_model  # Only save the model it-self
-        output_model_file = os.path.join(self.run_config.output_dir, "bert_trained", "pytorch_model.bin")
+        output_model_file = os.path.join(self.run_config.output_dir, "bert_tuned", "pytorch_model.bin")
         torch.save(model_to_save.state_dict(), output_model_file)
-        output_config_file = os.path.join(self.run_config.output_dir, "bert_trained", "bert_config.json")
+        output_config_file = os.path.join(self.run_config.output_dir, "bert_tuned", "bert_config.json")
         with open(output_config_file, 'w') as f:
             f.write(model_to_save.config.to_json_string())
         # UpperModel
-        output_model_file = os.path.join(self.run_config.output_dir, self.upper_model.name+".bin")
-        torch.save(self.upper_model, output_model_file)
+        model_to_save = self.upper_model.module if hasattr(self.bert_model, 'module') \
+            else self.bert_model  # Only save the model it-self
+        output_model_file = os.path.join(self.run_config.output_dir, self.upper_model_config.name+".bin")
+        torch.save(model_to_save.state_dict(), output_model_file)
         return
 
     def do_infer(self, infer_sent_pds):
@@ -215,10 +235,10 @@ class AppBasedOnBert(object):
         all_label_ids = torch.tensor([f.label_id for f in infer_features], dtype=torch.long)
         infer_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
 
-        infer_sampler = DistributedSampler(infer_data)
+        infer_sampler = SequentialSampler(infer_data)
         infer_dataloader = DataLoader(infer_data, sampler=infer_sampler, batch_size=self.run_config.infer_batch_size)
 
-        logger.info("***** Running evaluation *****")
+        logger.info("***** Running inference *****")
         logger.info("  Num examples = %d", len(infer_examples))
         logger.info("  Batch size = %d", self.run_config.infer_batch_size)
 
@@ -229,14 +249,65 @@ class AppBasedOnBert(object):
             input_ids = input_ids.to(self.device)
             input_mask = input_mask.to(self.device)
             segment_ids = segment_ids.to(self.device)
-            label_ids = label_ids.to(self.device)
 
             with torch.no_grad():
-                bert_encoded_layers, bert_pooled_output = self.bert_model(input_ids, segment_ids, input_mask, label_ids)
-                pred, loss = self.upper_model(bert_encoded_layers)
+                bert_encoded_layers, _ = self.bert_model(input_ids, segment_ids, input_mask, False)
+                pred = self.upper_model(bert_encoded_layers)
 
         result_writer = open(os.path.join(self.run_config.output_dir, "infer_result.txt"), "w")
-        pred = torch.unsqueeze(pred).tolist()
+        pred = pred.tolist()
         for i in range(len(pred)):
-            result_writer.write(str(pred[i] + "\n"))
+            result_writer.write(str(pred[i]) + "\n")
+
+
+def task_cola_cls():
+    """ 在cola数据集上做文本分类任务 """
+
+    # 准备数据
+    cola_train_df = pd.read_csv("/workspace/dataset/CoLA/train.tsv", sep="\t")
+    cola_dev_df = pd.read_csv("/workspace/dataset/CoLA/dev.tsv", sep="\t")
+    cola_test_df = pd.read_csv("/workspace/dataset/CoLA/test.tsv", sep="\t")
+    tr_sent_pds = cola_train_df["sentence"]
+    tr_label_pds = cola_train_df["label"]
+    dev_sent_pds = cola_dev_df["sentence"]
+    dev_label_pds = cola_dev_df["label"]
+    test_sent_pds = cola_test_df["sentence"]
+
+    # 准备 config 文件
+    app_run_config = RunConfig(
+        bert_model_dir="/workspace/train_output/cola_test/bert_tuned",
+        upper_model_path="/workspace/train_output/cola_test/TextCnn.bin",  # "/workspace/train_output/cola_test/TextCnn.bin"
+        output_dir="/workspace/train_output/cola_test2",
+        max_seq_length=64,
+        eval_freq=20,
+        train_batch_size=320,
+        eval_batch_size=480,
+        infer_batch_size=480,
+        learning_rate=2e-5,
+        num_train_epochs=1,
+        label_list=[0, 1],
+        fix_bert=False,
+        fix_upper=True
+    )
+    text_cnn_config = TextCnnConfig(
+        max_seq_length=app_run_config.max_seq_length,
+        no_grad=app_run_config.fix_upper
+    )
+    if app_run_config.fix_bert:
+        print("bert被固定")
+    if app_run_config.fix_upper:
+        print("上层模型被固定")
+
+    # 准备app类
+    app_cls_text_cnn = AppClsBasedOnBert(TextCnn, text_cnn_config, app_run_config)
+
+    # 执行训练
+    # app_cls_text_cnn.do_train(tr_sent_pds, tr_label_pds, dev_sent_pds, dev_label_pds)
+
+    # 执行预测 通常不会和 do_train() 一起执行
+    app_cls_text_cnn.do_infer(test_sent_pds)
+
+
+if __name__ == '__main__':
+    task_cola_cls()
 
