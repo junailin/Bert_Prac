@@ -1,19 +1,8 @@
+"""
+修改自HuggingFace-bert的utils.py
+"""
 
-from __future__ import absolute_import, division, print_function
-
-import csv
-import logging
-import os
-import sys
-curr_dir = os.path.dirname(os.path.realpath(__file__))
-# sys.path.append(os.path.join(curr_dir, '../'))
-
-import numpy as np
-
-logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                    datefmt = '%m/%d/%Y %H:%M:%S',
-                    level = logging.INFO)
-logger = logging.getLogger(__name__)
+import logger
 
 
 class InputExample(object):
@@ -47,38 +36,28 @@ class InputFeatures(object):
         self.label_id = label_id
 
 
-class DataProcessor(object):
-    """Base class for data converters for sequence classification data sets."""
-
-    def get_train_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the train set."""
-        raise NotImplementedError()
-
-    def get_dev_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the dev set."""
-        raise NotImplementedError()
-
-    def get_labels(self):
-        """Gets the list of labels for this data set."""
-        raise NotImplementedError()
-
-    @classmethod
-    def _read_tsv(cls, input_file, quotechar=None):
-        """Reads a tab separated value file."""
-        with open(input_file, "r") as f:
-            reader = csv.reader(f, delimiter="\t", quotechar=quotechar)
-            lines = []
-            for line in reader:
-                if sys.version_info[0] == 2:
-                    line = list(unicode(cell, 'utf-8') for cell in line)
-                lines.append(line)
-            return lines
+def convert_pds_to_examples(sent_pds, label_pds, set_type):
+    """
+    把 pandas.Series 格式的数据转为 InputExample 类列表
+    :param sent_pds: 句子的 pandas.Series
+    :param label_pds: 标签的 pandas.Series
+    :return: InputExample类实例的列表
+    """
+    examples = []
+    for i in range(sent_pds.shape[0]):
+        line = sent_pds[i]
+        guid = "%s-%s" % (set_type, i)
+        label = label_pds[i]
+        examples.append(
+            InputExample(guid=guid, text_a=line, text_b=None, label=label))
+    return examples
 
 
+# HuggingFace的源码
 def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
 
-    label_map = {label : i for i, label in enumerate(label_list)}
+    label_map = {label: i for i, label in enumerate(label_list)}
 
     features = []
     for (ex_index, example) in enumerate(examples):
@@ -142,21 +121,22 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
             logger.info("tokens: %s" % " ".join(
-                    [str(x) for x in tokens]))
+                [str(x) for x in tokens]))
             logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
             logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
             logger.info(
-                    "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+                "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
             logger.info("label: %s (id = %d)" % (example.label, label_id))
 
         features.append(
-                InputFeatures(input_ids=input_ids,
-                              input_mask=input_mask,
-                              segment_ids=segment_ids,
-                              label_id=label_id))
+            InputFeatures(input_ids=input_ids,
+                          input_mask=input_mask,
+                          segment_ids=segment_ids,
+                          label_id=label_id))
     return features
 
 
+# HuggingFace的源码
 def _truncate_seq_pair(tokens_a, tokens_b, max_length):
     """Truncates a sequence pair in place to the maximum length."""
 
@@ -172,8 +152,3 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
             tokens_a.pop()
         else:
             tokens_b.pop()
-
-
-def accuracy(out, labels):
-    outputs = np.argmax(out, axis=1)
-    return np.sum(outputs == labels)

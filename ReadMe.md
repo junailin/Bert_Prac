@@ -23,3 +23,11 @@ APP类实例.train()
 fp16
 多gpu和单gpu可调，负载均衡可调
 bert接口独立出来
+
+# 上层模型开发标准
+## 对于文本分类任务而言
+forward
+- 输入：bert_encoded_layers，size=[batch_size, seq_len, 768]
+- 输出：
+    - pred：size=[batch_size, 1]
+    - loss：可直接在外部做backward
