@@ -8,7 +8,7 @@ import random
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler, TensorDataset)
+from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
@@ -42,7 +42,10 @@ class AppBasedOnBert(object):
 
         # 实例化模型
         self.bert_model = BertModel.from_pretrained(self.run_config.bert_model_dir)
-        self.upper_model = upper_model_class(upper_model_config)  # todo 如何加载预训练的上层模型
+        self.upper_model = upper_model_class(upper_model_config)
+        if upper_model_config.pretrained_model_path is not None:  # 加载预训练模型
+            state_dict = torch.load(upper_model_config.pretrained_model_path)
+            self.upper_model.load_state_dict(state_dict)
         self.bert_model = torch.nn.DataParallel(self.bert_model)
         self.upper_model = torch.nn.DataParallel(self.upper_model)  # todo 考虑如何加负载均衡 (主要是loss问题)
 
@@ -127,7 +130,6 @@ class AppBasedOnBert(object):
                 batch = tuple(t.to(self.device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
                 bert_encoded_layers, _ = self.bert_model(input_ids, segment_ids, input_mask, label_ids)
-                # todo 上层模型接收 bert 的哪个输出
                 pred, loss = self.upper_model(bert_encoded_layers)
                 if self.n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
@@ -180,6 +182,19 @@ class AppBasedOnBert(object):
                     logger.info("***** Eval results *****")
                     for key in sorted(result.keys()):
                         logger.info("  %s = %s", key, str(result[key]))
+
+        # 保存训练好的模型
+        # BERT: Save a trained model and the associated configuration
+        model_to_save = self.bert_model.module if hasattr(self.bert_model, 'module') \
+            else self.bert_model  # Only save the model it-self
+        output_model_file = os.path.join(self.run_config.output_dir, "bert_trained", "pytorch_model.bin")
+        torch.save(model_to_save.state_dict(), output_model_file)
+        output_config_file = os.path.join(self.run_config.output_dir, "bert_trained", "bert_config.json")
+        with open(output_config_file, 'w') as f:
+            f.write(model_to_save.config.to_json_string())
+        # UpperModel
+        output_model_file = os.path.join(self.run_config.output_dir, self.upper_model.name+".bin")
+        torch.save(self.upper_model, output_model_file)
         return
 
     def do_infer(self, infer_sent_pds):

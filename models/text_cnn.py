@@ -9,6 +9,7 @@ class TextCnnConfig(object):
                  bert_emb_size=768,
                  num_labels=2,
                  dropout_after_bert=0.1):
+        self.name = "TextCnn"
         self.out_channel_num = out_channel_num
         self.max_seq_length = max_seq_length
         self.bert_emb_size = bert_emb_size
